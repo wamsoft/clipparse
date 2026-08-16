@@ -127,11 +127,44 @@ def test_merged_image_matches_canvas_preview():
     import io
     from PIL import Image
     d = imgdoc.open(_sample("text.clip"))
-    blob = d.clip.cur.execute("SELECT ImageData FROM CanvasPreview").fetchone()[0]
-    ref = np.array(Image.open(io.BytesIO(blob)).convert("RGB")).astype(int)
+    prev = d.preview_image()
+    assert prev is not None
+    ref = np.array(Image.open(io.BytesIO(prev[0])).convert("RGB")).astype(int)
     W, H = d.header.width, d.header.height
     got = np.frombuffer(d.merged_image(), np.uint8).reshape(H, W, 4)[..., [2, 1, 0]]
     assert np.abs(got.astype(int) - ref).max() == 0
+
+
+def test_backends_agree():
+    """C++ と純 Python のバックエンドが画素バイト単位で一致すること。"""
+    if imgdoc.BACKEND != "cpp":
+        pytest.skip("clipparse 拡張が無い")
+    for name in ("test000.clip", "blend2.clip", "text.clip", "mono_drawin.clip"):
+        a = imgdoc.open(_sample(name), backend="cpp")
+        b = imgdoc.open(_sample(name), backend="python")
+        assert [l.name_unicode for l in a.layers] == [l.name_unicode for l in b.layers]
+        assert a.roots == b.roots
+        for i in range(len(a.layers)):
+            assert a.layers[i].children == b.layers[i].children, (name, i)
+            la, lb = a.layers[i], b.layers[i]
+            assert (la.left, la.top, la.width, la.height) ==                    (lb.left, lb.top, lb.width, lb.height), (name, i)
+            assert la.layer_type == lb.layer_type
+            assert la.blend_mode == lb.blend_mode
+            assert a.layer_image(i) == b.layer_image(i), (name, i)
+        assert a.merged_image() == b.merged_image(), name
+
+
+def test_layer_region_reads_a_tile():
+    """部分読みが layer_image の同じ領域と一致すること (CLIP 固有の口)。"""
+    if imgdoc.BACKEND != "cpp":
+        pytest.skip("layer_region は C++ バックエンドのみ")
+    d = imgdoc.open(_sample("blend2.clip"))
+    i = 1
+    lay = d.layers[i]
+    x, y, w, h = 100, 120, 64, 48
+    part = np.frombuffer(d.layer_region(i, x, y, w, h), np.uint8).reshape(h, w, 4)
+    full = np.frombuffer(d.layer_image(i), np.uint8).reshape(lay.height, lay.width, 4)
+    assert np.array_equal(part, full[y:y + h, x:x + w])
 
 
 def test_text_layer_uses_object_bbox():

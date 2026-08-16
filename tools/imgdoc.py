@@ -18,7 +18,11 @@
 `psdparse.LayerType.NORMAL` と比較する。共通の基底クラスを挟むより、
 **psdparse の enum をそのまま返す**方が既存コードが素直に動く。
 
-依存: numpy / psdparse (enum を借りる) / clip_lazy_demo。
+**バックエンドは 2 つある。** C++ 拡張 (`clipparse`) があればそちらを、
+無ければ純 Python の参照実装 (`clip_lazy_demo`) を使う。どちらでも結果は
+同じ (回帰で画素バイト一致を確認している)。現在の選択は `imgdoc.BACKEND`。
+
+依存: numpy / psdparse (enum を借りる) / clipparse または clip_lazy_demo。
 """
 
 import importlib.util
@@ -27,11 +31,22 @@ import os
 import numpy as np
 import psdparse
 
+try:
+    import clipparse as _cpp
+    # リポジトリ直下の `clipparse/` (C++ ソース) が namespace package として
+    # 拾われることがあるので、中身があるかまで確かめる。
+    if not hasattr(_cpp, "ClipFile"):
+        _cpp = None
+except ImportError:                                  # 拡張が無ければ純 Python
+    _cpp = None
+
 _spec = importlib.util.spec_from_file_location(
     "clip_lazy_demo", os.path.join(os.path.dirname(__file__), "clip_lazy_demo.py"))
-demo = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(demo)
-demo.VERBOSE = False
+_demo = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_demo)
+_demo.VERBOSE = False
+
+BACKEND = "cpp" if _cpp is not None else "python"
 
 
 # CLIP の LayerComposite → PSD の 4 文字キー (docs/CLIP_FORMAT.md §9 で実測同定)
@@ -43,13 +58,28 @@ BLEND_TO_PSD = {
     25: "colr", 26: "lum ", 30: "pass", 36: "fdiv",
 }
 
+_PSD_BLEND_NAME = {
+    "norm": "NORMAL", "dark": "DARKEN", "mul ": "MULTIPLY", "idiv": "COLOR_BURN",
+    "lbrn": "LINEAR_BURN", "fsub": "SUBTRACT", "dkCl": "DARKER_COLOR",
+    "lite": "LIGHTEN", "scrn": "SCREEN", "div ": "COLOR_DODGE",
+    "lddg": "LINEAR_DODGE", "lgCl": "LIGHTER_COLOR", "over": "OVERLAY",
+    "sLit": "SOFT_LIGHT", "hLit": "HARD_LIGHT", "vLit": "VIVID_LIGHT",
+    "lLit": "LINEAR_LIGHT", "pLit": "PIN_LIGHT", "hMix": "HARD_MIX",
+    "diff": "DIFFERENCE", "smud": "EXCLUSION", "hue ": "HUE", "sat ": "SATURATION",
+    "colr": "COLOR", "lum ": "LUMINOSITY", "pass": "PASS_THROUGH", "fdiv": "DIVIDE",
+}
+
 FILTER_BIT = 4096
 FOLDER_BIT = 1
-PAPER_TYPE = 1584
 
 
 def _key_to_int(key):
     return sum(ord(c) << s for c, s in zip(key, (24, 16, 8, 0)))
+
+
+def _blend_of(comp):
+    key = BLEND_TO_PSD.get(comp, "norm")
+    return getattr(psdparse.BlendMode, _PSD_BLEND_NAME.get(key, "NORMAL"))
 
 
 class Header:
@@ -81,41 +111,39 @@ class Channel:
 class Layer:
     """psdparse.LayerInfo 互換 (読み取りのみ)。"""
 
-    def __init__(self, doc, index, row):
+    def __init__(self, doc, index, main_id, name, visible, opacity_raw, composite,
+                 clipping, is_group, is_filter, is_text, bounds, channels):
         self._doc = doc
         self._index = index
-        (self.main_id, name, _fc, _nx, vis, opa, comp, folder,
-         ltype, lclip) = row
-        self.name_unicode = name or ""
-        self.name = self.name_unicode
-        self.layer_id = self.main_id
-        self.visible = bool(vis)
-        # CLIP は 0..256、PSD は 0..255
-        self.opacity = min(255, opa * 255 // 256)
-        self.opacity_raw = opa                      # CLIP 固有 (0..256)
-        self.clipping = 1 if lclip else 0
-        self.composite_raw = comp                   # CLIP 固有 (LayerComposite)
-        self.blend_mode_key = _key_to_int(BLEND_TO_PSD.get(comp, "norm"))
-        self.blend_mode = _blend_mode_of(comp)
-        self.is_group = bool(folder & FOLDER_BIT)
+        self.main_id = main_id
+        self.layer_id = main_id
+        self.name = self.name_unicode = name or ""
+        self.visible = bool(visible)
+        self.opacity_raw = opacity_raw               # CLIP 固有 (0..256)
+        self.opacity = min(255, opacity_raw * 255 // 256)
+        self.composite_raw = composite               # CLIP 固有
+        self.blend_mode_key = _key_to_int(BLEND_TO_PSD.get(composite, "norm"))
+        self.blend_mode = _blend_of(composite)
+        self.clipping = 1 if clipping else 0
+        self.is_group = is_group
+        self.channels = channels
         self.transparency_protected = False
         self.obsolete = False
         self.pixel_data_irrelevant = False
         self.fill_opacity = 255
 
-        if self.is_group:
+        if is_group:
             self.layer_type = psdparse.LayerType.FOLDER
-        elif ltype & FILTER_BIT:
+        elif is_filter:
             self.layer_type = psdparse.LayerType.ADJUST
-        elif doc._is_text(self.main_id):
+        elif is_text:
             self.layer_type = psdparse.LayerType.TEXT
         else:
             self.layer_type = psdparse.LayerType.NORMAL
 
-        self.left, self.top, self.width, self.height = doc._bounds(self.main_id)
+        self.left, self.top, self.width, self.height = bounds
         self.right = self.left + self.width
         self.bottom = self.top + self.height
-        self.channels = doc._channels(self.main_id)
 
     @property
     def parent_index(self):
@@ -130,63 +158,87 @@ class Layer:
                 f"{self.width}x{self.height} {self.layer_type}>")
 
 
-def _blend_mode_of(comp):
-    key = BLEND_TO_PSD.get(comp, "norm")
-    # psdparse の BlendMode enum は 4cc から引けないので名前で対応させる
-    names = {
-        "norm": "NORMAL", "dark": "DARKEN", "mul ": "MULTIPLY",
-        "idiv": "COLOR_BURN", "lbrn": "LINEAR_BURN", "fsub": "SUBTRACT",
-        "dkCl": "DARKER_COLOR", "lite": "LIGHTEN", "scrn": "SCREEN",
-        "div ": "COLOR_DODGE", "lddg": "LINEAR_DODGE", "lgCl": "LIGHTER_COLOR",
-        "over": "OVERLAY", "sLit": "SOFT_LIGHT", "hLit": "HARD_LIGHT",
-        "vLit": "VIVID_LIGHT", "lLit": "LINEAR_LIGHT", "pLit": "PIN_LIGHT",
-        "hMix": "HARD_MIX", "diff": "DIFFERENCE", "smud": "EXCLUSION",
-        "hue ": "HUE", "sat ": "SATURATION", "colr": "COLOR", "lum ": "LUMINOSITY",
-        "pass": "PASS_THROUGH", "fdiv": "DIVIDE",
-    }
-    return getattr(psdparse.BlendMode, names.get(key, "NORMAL"))
-
-
 class ClipDocument:
     """psdparse.PSDFile 互換の読み取り面を .clip に被せたもの。"""
 
-    def __init__(self, path):
-        self._clip = demo.ClipFile(path)
-        W, H, root = self._clip.canvas()
-        self._root = root
-        res = self._clip.cur.execute(
-            "SELECT CanvasResolution FROM Canvas").fetchone()[0]
-        self.header = Header(W, H, float(res or 72.0))
+    def __init__(self, path, backend=None):
+        self.backend = backend or BACKEND
+        if self.backend == "cpp" and _cpp is None:
+            raise RuntimeError("clipparse 拡張が見つからない")
         self.merged_alpha = True
         self.is_loaded = True
-        self._composite = None
         self._image_cache = {}
+        self._composite = None
+        if self.backend == "cpp":
+            self._init_cpp(path)
+        else:
+            self._init_python(path)
 
-        rows = {r[0]: r for r in self._clip.cur.execute(
+    # --- C++ バックエンド -----------------------------------------------
+
+    def _init_cpp(self, path):
+        c = _cpp.ClipFile()
+        if not c.load(path):
+            raise OSError(f"cannot load {path}: {c.error}")
+        self._clip = c
+        self.header = Header(c.width, c.height, c.resolution)
+        self._parent = {}
+        self._children = {}
+        self.layers = []
+        for i, l in enumerate(c.layers):
+            self._parent[i] = l.parent_index
+            self._children[i] = list(l.children)
+            self.layers.append(Layer(
+                self, i, l.main_id, l.name_unicode, l.visible, l.opacity_raw,
+                l.composite_raw, l.clipping, l.is_group, l.is_filter, l.is_text,
+                (l.left, l.top, l.width, l.height), self._channels_cpp(l)))
+        self._children[-1] = list(c.roots)
+
+    def _channels_cpp(self, l):
+        if l.is_group:
+            return []
+        off = self._clip.top_offscreen(l.main_id)
+        a = self._clip.attribute(off) if off else None
+        if a is None:
+            return []
+        size = a.plane_bytes or (a.block_width * a.block_height)
+        n = a.num_channels
+        ids = [-1, 0, 1, 2] if n == 4 else ([-1, 0] if n == 1 else [-1])
+        return [Channel(i, size) for i in ids]
+
+    # --- 純 Python バックエンド (参照実装) ------------------------------
+
+    def _init_python(self, path):
+        clip = _demo.ClipFile(path)
+        self._clip = clip
+        W, H, root = clip.canvas()
+        self._root = root
+        res = clip.cur.execute("SELECT CanvasResolution FROM Canvas").fetchone()[0]
+        self.header = Header(W, H, float(res or 72.0))
+        self._layer_columns = {d[1] for d in
+                               clip.cur.execute("PRAGMA table_info(Layer)")}
+        rows = {r[0]: r for r in clip.cur.execute(
             "SELECT MainId, LayerName, LayerFirstChildIndex, LayerNextIndex,"
             " LayerVisibility, LayerOpacity, LayerComposite, LayerFolder,"
             " LayerType, LayerClip FROM Layer")}
         self._rows = rows
-
-        self._layer_columns = {d[1] for d in
-                               self._clip.cur.execute("PRAGMA table_info(Layer)")}
-
-        # CLIP のツリーを psdparse と同じ「平坦・下から上」の並びへ均す。
-        # 中身を先に、フォルダ自身を後に積むので PSD の並び順と一致する
-        # (PSD はフォルダレイヤが中身より上にある)。
         self.layers = []
         self._parent = {}
         self._children = {}
 
         def walk(parent_id):
-            """parent_id の子を積み、この階層で積んだ index を返す。"""
             here = []
             child = rows[parent_id][2]
             while child:
                 row = rows[child]
                 inner = walk(child) if (row[7] & FOLDER_BIT) else []
                 idx = len(self.layers)
-                self.layers.append(Layer(self, idx, row))
+                (mid, name, _fc, _nx, vis, opa, comp, folder, ltype, lclip) = row
+                self.layers.append(Layer(
+                    self, idx, mid, name, vis, opa, comp, lclip,
+                    bool(folder & FOLDER_BIT), bool(ltype & FILTER_BIT),
+                    self._is_text_py(mid), self._bounds_py(mid),
+                    self._channels_py(mid)))
                 for c in inner:
                     self._parent[c] = idx
                 self._children[idx] = inner
@@ -198,85 +250,17 @@ class ClipDocument:
             self._parent[i] = -1
         self._children[-1] = [i for i, p in self._parent.items() if p == -1]
 
-    # --- ツリービュー ---------------------------------------------------
-
-    @property
-    def roots(self):
-        return self.children(-1)
-
-    def children(self, index):
-        return list(self._children.get(index, []))
-
-    # --- 画像 -----------------------------------------------------------
-
-    def merged_image(self):
-        if self._composite is None:
-            self._composite = demo.composite(
-                self._clip, self._root, self.header.width, self.header.height, 0)
-        return self._composite[..., [2, 1, 0, 3]].tobytes()
-
-    def layer_image(self, index, mode="masked"):
-        if index < 0 or index >= len(self.layers):
-            raise IndexError(index)
-        if mode not in ("masked", "image", "mask"):
-            raise ValueError(mode)
-        lay = self.layers[index]
-        if lay.width <= 0 or lay.height <= 0:
-            return b""
-        key = (index, mode)
-        if key not in self._image_cache:
-            rgba = self._layer_rgba(lay, mode)
-            self._image_cache[key] = rgba[..., [2, 1, 0, 3]].tobytes()
-        return self._image_cache[key]
-
-    def _layer_rgba(self, lay, mode):
-        mid = lay.main_id
-        W, H = self.header.width, self.header.height
-        moff = self._clip.top_offscreen(mid, mask=True)
-        has_mask = moff is not None and self._clip.has_pixels(moff)
-
-        if mode == "mask":
-            if not has_mask:
-                return np.zeros((lay.height, lay.width, 4), np.uint8)
-            m = demo.fit_canvas(self._clip.offscreen_image(moff), W, H)
-            out = np.zeros((H, W, 4), np.uint8)
-            for c in range(3):
-                out[..., c] = m[..., 3]
-            out[..., 3] = 255
-            return _crop(out, lay)
-
-        img = demo.layer_pixels(self._clip, mid, W, H, 0, "")
-        if img is None:
-            return np.zeros((lay.height, lay.width, 4), np.uint8)
-        if img.shape[0] != lay.height or img.shape[1] != lay.width:
-            img = _crop(demo.fit_canvas(img, W, H), lay)
-        if mode == "masked" and has_mask:
-            m = _crop(demo.fit_canvas(self._clip.offscreen_image(moff), W, H), lay)
-            img = img.copy()
-            img[..., 3] = (img[..., 3].astype(np.uint32)
-                           * m[..., 3] // 255).astype(np.uint8)
-        return img
-
-    # --- 内部 -----------------------------------------------------------
-
-    def _is_text(self, main_id):
-        # Layer の列構成はファイル (CSP のバージョンと使用機能) で変わるので、
-        # 列の有無を確かめてから引く。
+    def _is_text_py(self, main_id):
         if "TextLayerString" not in self._layer_columns:
             return False
         r = self._clip.cur.execute(
             "SELECT TextLayerString FROM Layer WHERE MainId=?", (main_id,)).fetchone()
         return bool(r and r[0])
 
-    def _bounds(self, main_id):
-        """レイヤのラスタがキャンバス上で占める矩形。
-
-        CLIP のラスタは基本キャンバス全面だが、テキスト等のオブジェクトレイヤは
-        外接矩形サイズの Offscreen を配置位置に置く (CLIP_FORMAT.md §2.3)。
-        """
+    def _bounds_py(self, main_id):
         W, H = self.header.width, self.header.height
         if self._rows[main_id][7] & FOLDER_BIT:
-            return 0, 0, 0, 0        # フォルダは画素を持たない (psdparse と同じ)
+            return 0, 0, 0, 0
         off = self._clip.top_offscreen(main_id)
         if off is None:
             return 0, 0, 0, 0
@@ -290,30 +274,103 @@ class ClipDocument:
                     return origin[0], origin[1], oa["width"], oa["height"]
         return 0, 0, W, H
 
-    def _channels(self, main_id):
-        """CLIP のプレーン構成を PSD のチャンネル id で見せる。
-
-        CLIP はチャンネル分解ではなくブロック内のプレーンで持っている
-        (CLIP_FORMAT.md §3.2.1)。id は PSD の慣習 (-1=α, 0/1/2=R/G/B) に合わせ、
-        length は 1 プレーンの展開後バイト数を入れる。
-        """
+    def _channels_py(self, main_id):
         if self._rows[main_id][7] & FOLDER_BIT:
             return []
         off = self._clip.top_offscreen(main_id)
         if off is None:
             return []
         a = self._clip.attribute(off)
-        n = a["num_channels"]
         size = a["plane_bytes"] or (a["block_width"] * a["block_height"])
-        if n == 4:
-            ids = [-1, 0, 1, 2]
-        elif n == 1:
-            ids = [-1, 0]                       # グレー/モノクロ: α + 値
-        else:
-            ids = [-1]                          # マスク: α のみ
+        n = a["num_channels"]
+        ids = [-1, 0, 1, 2] if n == 4 else ([-1, 0] if n == 1 else [-1])
         return [Channel(i, size) for i in ids]
 
-    # 生の clipparse リーダ (CLIP 固有の機能へ抜ける口)
+    # --- ツリービュー ---------------------------------------------------
+
+    @property
+    def roots(self):
+        return self.children(-1)
+
+    def children(self, index):
+        return list(self._children.get(index, []))
+
+    # --- 画像 -----------------------------------------------------------
+
+    def merged_image(self):
+        if self.backend == "cpp":
+            return self._clip.merged_image()
+        if self._composite is None:
+            self._composite = _demo.composite(
+                self._clip, self._root, self.header.width, self.header.height, 0)
+        return self._composite[..., [2, 1, 0, 3]].tobytes()
+
+    def layer_image(self, index, mode="masked"):
+        if index < 0 or index >= len(self.layers):
+            raise IndexError(index)
+        if mode not in ("masked", "image", "mask"):
+            raise ValueError(mode)
+        lay = self.layers[index]
+        if lay.width <= 0 or lay.height <= 0:
+            return b""
+        if self.backend == "cpp":
+            return self._clip.layer_image(index, mode)
+        key = (index, mode)
+        if key not in self._image_cache:
+            self._image_cache[key] = \
+                self._layer_rgba_py(lay, mode)[..., [2, 1, 0, 3]].tobytes()
+        return self._image_cache[key]
+
+    def layer_region(self, index, x, y, width, height, mode="masked"):
+        """レイヤの一部だけを読む。**CLIP は該当タイルしか展開しない。**
+
+        PSD (psdparse) には無い口。同じことを PSD でやると `layer_image` を
+        丸ごと読んでから切り出すことになる (行 RLE なので部分読みが効かない)。
+        """
+        if self.backend != "cpp":
+            raise NotImplementedError("layer_region は C++ バックエンドのみ")
+        return self._clip.layer_region(index, x, y, width, height, mode)
+
+    def preview_image(self):
+        """ファイルに埋まっている完成画。(png_bytes, w, h) か None。
+
+        CLIP は `CanvasPreview`、PSD ならサムネイル image resource が相当する。
+        """
+        if self.backend == "cpp":
+            return self._clip.preview_png()
+        r = self._clip.cur.execute(
+            "SELECT ImageData, ImageWidth, ImageHeight FROM CanvasPreview").fetchone()
+        return (bytes(r[0]), r[1], r[2]) if r and r[0] else None
+
+    def _layer_rgba_py(self, lay, mode):
+        mid = lay.main_id
+        W, H = self.header.width, self.header.height
+        moff = self._clip.top_offscreen(mid, mask=True)
+        has_mask = moff is not None and self._clip.has_pixels(moff)
+
+        if mode == "mask":
+            if not has_mask:
+                return np.zeros((lay.height, lay.width, 4), np.uint8)
+            m = _demo.fit_canvas(self._clip.offscreen_image(moff), W, H)
+            out = np.zeros((H, W, 4), np.uint8)
+            for c in range(3):
+                out[..., c] = m[..., 3]
+            out[..., 3] = 255
+            return _crop(out, lay)
+
+        img = _demo.layer_pixels(self._clip, mid, W, H, 0, "")
+        if img is None:
+            return np.zeros((lay.height, lay.width, 4), np.uint8)
+        if img.shape[0] != lay.height or img.shape[1] != lay.width:
+            img = _crop(_demo.fit_canvas(img, W, H), lay)
+        if mode == "masked" and has_mask:
+            m = _crop(_demo.fit_canvas(self._clip.offscreen_image(moff), W, H), lay)
+            img = img.copy()
+            img[..., 3] = (img[..., 3].astype(np.uint32)
+                           * m[..., 3] // 255).astype(np.uint8)
+        return img
+
+    # 生のリーダ (CLIP 固有の機能へ抜ける口)
     @property
     def clip(self):
         return self._clip
@@ -330,10 +387,10 @@ def _crop(canvas, lay):
     return out
 
 
-def open(path):
+def open(path, backend=None):
     """拡張子で分岐して、psdparse 互換の読み取り面を返す。"""
     if str(path).lower().endswith(".clip"):
-        return ClipDocument(str(path))
+        return ClipDocument(str(path), backend)
     p = psdparse.PSDFile()
     if not p.load(str(path)):
         raise OSError(f"cannot load {path}")

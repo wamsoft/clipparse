@@ -58,8 +58,15 @@ build\clipparse\Release\clip_cli.exe samples\test000.clip --check
 SQLite は `sqlite3_deserialize(..., SQLITE_DESERIALIZE_READONLY)` で
 mmap 上をゼロコピー参照する — 一時ファイルを作らない。
 
-読み出しの正しさは Python 版と**画素バイト単位で一致**することで確認している
-(RGBA / グレー / モノクロ / マスクの 4 表現色すべて)。
+読み出しも合成も、Python の参照実装と**画素バイト単位で一致**することを
+回帰で確認している (表現色 4 種 / 合成モード 27 種 / 調整レイヤ / フォルダ)。
+**60 MB のファイルの合成で純 Python 版の約 20 倍速** (5.8 秒 vs 119 秒)。
+
+C++ 側にしかない口:
+
+- `layer_region(i, x, y, w, h)` — **重なる 256x256 タイルだけを展開する**部分読み。
+  PSD は行 RLE なので同じことができない
+- `preview_png()` — ファイルに埋まっている完成画 (`CanvasPreview`)
 
 ## psdparse 互換で読む
 
@@ -84,6 +91,9 @@ doc.layer_image(0)                  # BGRA bytes
 `layer_type` / `blend_mode` は **psdparse の enum をそのまま返す**ので、
 `psdparse.LayerType.NORMAL` との比較がそのまま通る。
 設計判断の根拠は [docs/DESIGN.md](docs/DESIGN.md) §5。
+
+バックエンドは C++ 拡張があればそちら、無ければ純 Python の参照実装。
+どちらでも結果は同じ (`imgdoc.BACKEND` で分かる)。
 
 ## 検証ツール
 
