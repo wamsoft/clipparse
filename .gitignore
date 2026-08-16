@@ -10,3 +10,5 @@ __pycache__/
 
 # C++ ビルド成果物
 build/
+build-*/
+*.raw

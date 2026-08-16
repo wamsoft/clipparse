@@ -5,9 +5,12 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <functional>
+#include <algorithm>
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX          // windows.h の min/max マクロが std::min/max を壊す
 #  include <windows.h>
 #else
 #  include <fcntl.h>
@@ -166,29 +169,66 @@ namespace clip {
 
     sqlite3_stmt *st = nullptr;
     // Canvas
-    if (sqlite3_prepare_v2(db_, "SELECT CanvasWidth, CanvasHeight, CanvasRootFolder"
-                                " FROM Canvas LIMIT 1", -1, &st, nullptr) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, "SELECT CanvasWidth, CanvasHeight, CanvasRootFolder,"
+                                " CanvasResolution FROM Canvas LIMIT 1",
+                           -1, &st, nullptr) == SQLITE_OK) {
       if (sqlite3_step(st) == SQLITE_ROW) {
         canvasW_ = sqlite3_column_int64(st, 0);
         canvasH_ = sqlite3_column_int64(st, 1);
         rootLayer_ = sqlite3_column_int64(st, 2);
+        canvasRes_ = sqlite3_column_double(st, 3);
+        if (canvasRes_ <= 0) canvasRes_ = 72.0;
       }
       sqlite3_finalize(st);
     }
 
-    // Layer をすべて読む
+    // 実ピクセル寸法はルートフォルダの 100% ミップから取る (下の topOffscreen が
+    // layers_ を使わないので、この時点で引ける)。
+    {
+      sqlite3_stmt *m = nullptr;
+      int64_t mip = 0, base = 0, offs = 0;
+      if (sqlite3_prepare_v2(db_, "SELECT LayerRenderMipmap FROM Layer WHERE MainId=?",
+                             -1, &m, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(m, 1, rootLayer_);
+        if (sqlite3_step(m) == SQLITE_ROW) mip = sqlite3_column_int64(m, 0);
+        sqlite3_finalize(m);
+      }
+      if (mip && sqlite3_prepare_v2(db_, "SELECT BaseMipmapInfo FROM Mipmap WHERE MainId=?",
+                                    -1, &m, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(m, 1, mip);
+        if (sqlite3_step(m) == SQLITE_ROW) base = sqlite3_column_int64(m, 0);
+        sqlite3_finalize(m);
+      }
+      if (base && sqlite3_prepare_v2(db_, "SELECT Offscreen FROM MipmapInfo WHERE MainId=?",
+                                     -1, &m, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(m, 1, base);
+        if (sqlite3_step(m) == SQLITE_ROW) offs = sqlite3_column_int64(m, 0);
+        sqlite3_finalize(m);
+      }
+      if (offs) {
+        if (const OffscreenAttr *a = attribute(offs)) {
+          canvasPixelW_ = a->width;
+          canvasPixelH_ = a->height;
+        }
+      }
+      if (!canvasPixelW_) { canvasPixelW_ = canvasW_; canvasPixelH_ = canvasH_; }
+    }
+
+    // Layer をすべて読む (まず MainId をキーに素の行を集める)
     const char *sql =
       "SELECT MainId, LayerName, LayerType, LayerFolder, LayerVisibility,"
       " LayerOpacity, LayerComposite, LayerClip, LayerFirstChildIndex,"
       " LayerNextIndex, LayerRenderMipmap, LayerLayerMaskMipmap,"
       " LayerRenderThumbnail, LayerLayerMaskThumbnail FROM Layer";
-    std::map<int64_t, std::pair<int64_t, int64_t>> links;   // id -> (firstChild, next)
+    struct Row { LayerInfo li; int64_t firstChild = 0, next = 0; };
+    std::map<int64_t, Row> rows;
     if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
       error_ = std::string("Layer query failed: ") + sqlite3_errmsg(db_);
       return false;
     }
     while (sqlite3_step(st) == SQLITE_ROW) {
-      LayerInfo li;
+      Row r;
+      LayerInfo &li = r.li;
       li.mainId     = sqlite3_column_int64(st, 0);
       if (const unsigned char *t = sqlite3_column_text(st, 1))
         li.name = (const char *)t;
@@ -198,30 +238,134 @@ namespace clip {
       li.opacity    = sqlite3_column_int64(st, 5);
       li.composite  = sqlite3_column_int64(st, 6);
       li.clipping   = sqlite3_column_int64(st, 7);
-      links[li.mainId] = { sqlite3_column_int64(st, 8), sqlite3_column_int64(st, 9) };
+      r.firstChild  = sqlite3_column_int64(st, 8);
+      r.next        = sqlite3_column_int64(st, 9);
       li.renderMipmap    = sqlite3_column_int64(st, 10);
       li.maskMipmap      = sqlite3_column_int64(st, 11);
       li.renderThumbnail = sqlite3_column_int64(st, 12);
       li.maskThumbnail   = sqlite3_column_int64(st, 13);
-      layerById_[li.mainId] = int(layers_.size());
-      layers_.push_back(li);
+      li.isGroup  = (li.folder & 1) != 0;
+      li.isFilter = (li.type & FILTER_BIT) != 0;
+      li.hasMask  = (li.type & 2) != 0;
+      rows[li.mainId] = r;
     }
     sqlite3_finalize(st);
 
-    // 親子リンクを解決する (子チェーンの先頭が最下層)
-    for (auto &kv : links) {
-      auto it = layerById_.find(kv.first);
-      if (it == layerById_.end()) continue;
-      int64_t child = kv.second.first;
+    hasTextColumn_ = hasColumn("Layer", "TextLayerString");
+
+    // ツリーを **psdparse と同じ平坦順** へ均す。
+    // 中身を先に、フォルダ自身を後に積む (PSD はフォルダレイヤが中身より上)。
+    // こうすると layers() の index 順がそのまま描画順になる。
+    std::function<std::vector<int>(int64_t)> flatten = [&](int64_t parentId) {
+      std::vector<int> here;
+      auto pit = rows.find(parentId);
+      if (pit == rows.end()) return here;
+      int64_t child = pit->second.firstChild;
       while (child) {
-        auto ci = layerById_.find(child);
-        if (ci == layerById_.end()) break;
-        layers_[ci->second].parent = it->second;
-        layers_[it->second].children.push_back(ci->second);
-        child = links[child].second;
+        auto cit = rows.find(child);
+        if (cit == rows.end()) break;
+        std::vector<int> inner;
+        if (cit->second.li.isGroup) inner = flatten(child);
+        const int idx = int(layers_.size());
+        layers_.push_back(cit->second.li);
+        layerById_[child] = idx;
+        for (int c : inner) layers_[(size_t)c].parent = idx;
+        layers_[(size_t)idx].children = inner;
+        here.push_back(idx);
+        child = cit->second.next;
       }
+      return here;
+    };
+    rootChildren_ = flatten(rootLayer_);
+    for (int i : rootChildren_) layers_[(size_t)i].parent = -1;
+
+    // 矩形とテキスト判定は Attribute / TLV を触るので、平坦化の後でまとめて。
+    for (auto &li : layers_) {
+      li.isText = hasTextColumn_ && layerHasText(li.mainId);
+      li.bounds = computeBounds(li);
     }
     return true;
+  }
+
+  bool ClipFile::hasColumn(const char *table, const char *column) const {
+    sqlite3_stmt *st = nullptr;
+    const std::string sql = std::string("PRAGMA table_info(") + table + ")";
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+      return false;
+    bool found = false;
+    while (sqlite3_step(st) == SQLITE_ROW) {
+      const unsigned char *n = sqlite3_column_text(st, 1);
+      if (n && strcmp((const char *)n, column) == 0) { found = true; break; }
+    }
+    sqlite3_finalize(st);
+    return found;
+  }
+
+  bool ClipFile::layerHasText(int64_t mainId) const {
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT TextLayerString FROM Layer WHERE MainId=?",
+                           -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(st, 1, mainId);
+    bool has = false;
+    if (sqlite3_step(st) == SQLITE_ROW)
+      has = sqlite3_column_bytes(st, 0) > 0;
+    sqlite3_finalize(st);
+    return has;
+  }
+
+  // テキストレイヤの配置位置を TextLayerAttributes の TLV タグ 42 から取る。
+  // TLV の開始位置を求めるには手前のセクションを全部解く必要があるので、
+  // 「タグ 42・長さ 16・幅が Offscreen と一致」で同定する (CLIP_FORMAT.md §2.3)。
+  bool ClipFile::textOrigin(int64_t mainId, uint32_t w, uint32_t h,
+                            int &x, int &y) const {
+    (void)h;
+    sqlite3_stmt *st = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT TextLayerAttributes FROM Layer WHERE MainId=?",
+                           -1, &st, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_int64(st, 1, mainId);
+    bool ok = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+      const uint8_t *b = (const uint8_t *)sqlite3_column_blob(st, 0);
+      const int n = sqlite3_column_bytes(st, 0);
+      for (int i = 0; b && i + 24 <= n; ++i) {
+        if (leU32(b + i) != 42) continue;
+        if (leU32(b + i + 4) != 16) continue;
+        const int32_t x0 = (int32_t)leU32(b + i + 8);
+        const int32_t y0 = (int32_t)leU32(b + i + 12);
+        const int32_t x1 = (int32_t)leU32(b + i + 16);
+        if (uint32_t(x1 - x0) == w - 1) { x = x0; y = y0; ok = true; break; }
+      }
+    }
+    sqlite3_finalize(st);
+    return ok;
+  }
+
+  // レイヤのラスタがキャンバス上で占める矩形。
+  // 基本はキャンバス全面だが、テキスト等のオブジェクトレイヤは外接矩形サイズの
+  // Offscreen を配置位置に置く。フォルダは psdparse に合わせて 0x0。
+  Rect ClipFile::computeBounds(const LayerInfo &li) const {
+    Rect r;
+    if (li.isGroup) return r;
+    const int64_t off = topOffscreen(li.mainId);
+    if (!off) return r;
+    const OffscreenAttr *a = attribute(off);
+    if (!a) return r;
+    if (!hasPixels(off) && !a->hasInitColor) {
+      const int64_t obj = objectOffscreen(li.mainId);
+      if (obj) {
+        if (const OffscreenAttr *oa = attribute(obj)) {
+          int x = 0, y = 0;
+          if (textOrigin(li.mainId, oa->width, oa->height, x, y)) {
+            r.x = x; r.y = y;
+            r.w = int(oa->width); r.h = int(oa->height);
+            return r;
+          }
+        }
+      }
+    }
+    r.w = int(canvasPixelW_);
+    r.h = int(canvasPixelH_);
+    return r;
   }
 
   int ClipFile::layerIndex(int64_t mainId) const {
@@ -480,6 +624,59 @@ namespace clip {
         if (!copyW) continue;
         memcpy(&rgba[(size_t(dy) * w + bc * blk.width) * 4],
                &blk.rgba[size_t(y) * blk.width * 4], size_t(copyW) * 4);
+      }
+    }
+    return true;
+  }
+
+  bool ClipFile::readOffscreen(int64_t offscreenId, Image &out) const {
+    uint32_t w = 0, h = 0;
+    if (!readOffscreen(offscreenId, out.rgba, w, h)) return false;
+    out.width = w; out.height = h;
+    return true;
+  }
+
+  // 指定矩形に重なるブロックだけを展開する。CLIP は 256x256 タイルなので、
+  // 大きなレイヤの一部を取るコストがタイル数に比例する (PSD では出来ない芸当)。
+  bool ClipFile::readOffscreenRegion(int64_t offscreenId, const Rect &r,
+                                     Image &out) const {
+    const OffscreenAttr *a = attribute(offscreenId);
+    if (!a || r.empty()) return false;
+    out.resize(uint32_t(r.w), uint32_t(r.h));
+    if (a->hasInitColor) {
+      const uint32_t c = a->initColor;
+      for (size_t i = 0; i < size_t(r.w) * r.h; i++) {
+        out.rgba[i * 4 + 0] = uint8_t(c >> 24); out.rgba[i * 4 + 1] = uint8_t(c >> 16);
+        out.rgba[i * 4 + 2] = uint8_t(c >> 8);  out.rgba[i * 4 + 3] = uint8_t(c);
+      }
+    }
+    if (!hasPixels(offscreenId)) return true;
+
+    const uint32_t bw = a->blockWidth, bh = a->blockHeight;
+    if (!bw || !bh) return true;
+    const int c0 = std::max(0, r.x / int(bw));
+    const int c1 = std::min(int(a->cols) - 1, (r.x + r.w - 1) / int(bw));
+    const int r0 = std::max(0, r.y / int(bh));
+    const int r1 = std::min(int(a->rows) - 1, (r.y + r.h - 1) / int(bh));
+
+    Block blk;
+    for (int br = r0; br <= r1; br++) {
+      for (int bc = c0; bc <= c1; bc++) {
+        const uint32_t bi = uint32_t(br) * a->cols + uint32_t(bc);
+        if (bi >= a->blockSizes.size()) continue;
+        if (!readBlock(offscreenId, bi, blk) || blk.empty) continue;
+        for (uint32_t y = 0; y < blk.height; y++) {
+          const int cy = br * int(bh) + int(y);          // キャンバス座標
+          const int dy = cy - r.y;
+          if (dy < 0 || dy >= r.h) continue;
+          for (uint32_t x = 0; x < blk.width; x++) {
+            const int cx = bc * int(bw) + int(x);
+            const int dx = cx - r.x;
+            if (dx < 0 || dx >= r.w) continue;
+            memcpy(out.at(uint32_t(dx), uint32_t(dy)),
+                   &blk.rgba[(size_t(y) * blk.width + x) * 4], 4);
+          }
+        }
       }
     }
     return true;
