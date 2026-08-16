@@ -1,6 +1,7 @@
 """`.clip` の書き出し (W0/W1 段階の土台)。
 
     python tools/clip_write.py roundtrip  IN.clip OUT.clip
+    python tools/clip_write.py set        IN.clip OUT.clip --layer 5 --opacity 64                                           --name 新しい名前 --visible 0 --composite 2
     python tools/clip_write.py opacity    IN.clip OUT.clip --layer 5 --value 64
     python tools/clip_write.py nothumb    IN.clip OUT.clip
     python tools/clip_write.py verify     A.clip B.clip
@@ -159,6 +160,53 @@ def cmd_roundtrip(args):
     return 1
 
 
+# W1 (属性編集) で触れる列。いずれも SQLite の UPDATE だけで済み、
+# バイナリ領域に触らないので `ExternalChunk.Offset` が動かない。
+ATTR_COLUMNS = {
+    "name":      ("LayerName",       str),
+    "visible":   ("LayerVisibility", int),   # 0 / 1
+    "opacity":   ("LayerOpacity",    int),   # 0..256 (**255 ではない**)
+    "composite": ("LayerComposite",  int),   # docs/CLIP_FORMAT.md §9
+    "clip":      ("LayerClip",       int),   # 0 / 1
+    "folder":    ("LayerFolder",     int),   # bit0=フォルダ, bit4=折り畳み
+}
+
+
+def cmd_set(args):
+    """レイヤ属性を変更する (W1)。SQLite の UPDATE のみ。"""
+    c = ClipFile(args.src)
+    cur = c.db.cursor()
+    row = cur.execute("SELECT LayerName FROM Layer WHERE MainId=?",
+                      (args.layer,)).fetchone()
+    if row is None:
+        print(f"  レイヤ #{args.layer} が無い")
+        c.close()
+        return 1
+
+    changed = []
+    for key, (column, conv) in ATTR_COLUMNS.items():
+        val = getattr(args, key, None)
+        if val is None:
+            continue
+        before = cur.execute(f"SELECT [{column}] FROM Layer WHERE MainId=?",
+                             (args.layer,)).fetchone()[0]
+        cur.execute(f"UPDATE Layer SET [{column}]=? WHERE MainId=?",
+                    (conv(val), args.layer))
+        changed.append(f"{column}: {before!r} -> {conv(val)!r}")
+    if not changed:
+        print("  変更する属性が指定されていない")
+        c.close()
+        return 1
+    c.db.commit()
+    n = c.save(args.dst)
+    c.close()
+    print(f"  レイヤ #{args.layer} {row[0]!r}")
+    for line in changed:
+        print(f"    {line}")
+    print(f"  {args.dst}  {n:,} B")
+    return 0
+
+
 def cmd_opacity(args):
     """レイヤ不透明度だけ変更する (SQLite の UPDATE のみ。オフセットは動かない)。"""
     c = ClipFile(args.src)
@@ -224,14 +272,23 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("roundtrip", cmd_roundtrip), ("opacity", cmd_opacity),
-                     ("nothumb", cmd_nothumb), ("verify", cmd_verify)):
+    for name, fn in (("roundtrip", cmd_roundtrip), ("set", cmd_set),
+                     ("opacity", cmd_opacity), ("nothumb", cmd_nothumb),
+                     ("verify", cmd_verify)):
         p = sub.add_parser(name)
         p.add_argument("src")
         p.add_argument("dst")
         if name == "opacity":
             p.add_argument("--layer", type=int, required=True)
             p.add_argument("--value", type=int, required=True, help="0..256")
+        if name == "set":
+            p.add_argument("--layer", type=int, required=True, help="Layer.MainId")
+            p.add_argument("--name", help="レイヤ名")
+            p.add_argument("--visible", type=int, choices=(0, 1))
+            p.add_argument("--opacity", type=int, help="0..256")
+            p.add_argument("--composite", type=int, help="LayerComposite")
+            p.add_argument("--clip", type=int, choices=(0, 1), help="クリッピング")
+            p.add_argument("--folder", type=int, help="LayerFolder ビット")
         p.set_defaults(func=fn)
     args = ap.parse_args()
     return args.func(args)
