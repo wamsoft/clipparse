@@ -194,10 +194,32 @@ venv には導入済み (`pip install .` で **0.8.1 → 0.10.0** へ更新。
 別環境で使うときは psdparse で `pip install .` を実行すること
 — `add_folder` が無い psdparse では自動的に平坦化へ落ちる。
 
-### ⑥ 次にやること
+### ⑥ 共通 API — Python 側は完了
 
-- C++ の部分読み (`layerRegion`) と共通 API 面
-- psdparse と揃えた Python バインディング
+判断の根拠と設計は [DESIGN.md](DESIGN.md) §5。結論は
+「psdparse スタイルで揃える。ただし共通面は小さく・ツリー主体」。
+
+**psdparse 側 (済)**: `PSDFile.roots` / `children(i)` / `LayerInfo.children` /
+`is_group` を追加。平坦リストは正のまま、ツリーは派生ビュー。
+区切りレイヤは children に出さない。
+
+**clipparse 側 (済)**: `tools/imgdoc.py` が psdparse 互換の読み取り面を被せる。
+`tools/run_on_clip.py` で **psdparse の examples/tools を無改造で .clip に向けられる**:
+
+```
+psd_export.py     全サンプルで layers.json + merged.png + レイヤ PNG を出力
+composite.py      text.clip の出力が CanvasPreview と max=0 で一致
+extract_layers.py folder.clip から 3 レイヤ + manifest.json
+```
+
+`tests/test_imgdoc.py` に 14 件。`python -m pytest tests -q`。
+
+### ⑦ 次にやること
+
+- **C++ の共通面** (`imgdoc::Document` / `Layer`)。Python で形が固まったので写せる
+- **clipparse の Python バインディング** (pybind11)。`imgdoc.py` と同じ名前を実装すれば
+  そのまま差し替わる
+- C++ の部分読み (`layerRegion`)
 - W1 (属性編集) を `clip_write.py` に足す (CSP 確認が通ったので安全)
 
 ### ④ C++ 移植 → 共通 API → CLIP→PSD 変換

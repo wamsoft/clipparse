@@ -61,6 +61,30 @@ mmap 上をゼロコピー参照する — 一時ファイルを作らない。
 読み出しの正しさは Python 版と**画素バイト単位で一致**することで確認している
 (RGBA / グレー / モノクロ / マスクの 4 表現色すべて)。
 
+## psdparse 互換で読む
+
+`tools/imgdoc.py` が psdparse 互換の読み取り面を `.clip` に被せる。
+**psdparse の `examples/` や `tools/` を 1 行も直さずに `.clip` へ向けられる。**
+
+```powershell
+# psdparse 向けのスクリプトを、そのまま .clip に対して走らせる
+python tools/run_on_clip.py D:	est\psdparse	ools\psd_export.py sampleslend2.clip --out-dir out
+python tools/run_on_clip.py D:	est\psdparse\examples\composite.py samples	ext.clip out.png
+```
+
+```python
+import imgdoc
+doc = imgdoc.open("file.clip")     # .psd なら psdparse.PSDFile をそのまま返す
+doc.header.width, doc.header.height
+for i in doc.roots:                 # ツリービュー
+    print(doc.layers[i].name_unicode, doc.layers[i].children)
+doc.layer_image(0)                  # BGRA bytes
+```
+
+`layer_type` / `blend_mode` は **psdparse の enum をそのまま返す**ので、
+`psdparse.LayerType.NORMAL` との比較がそのまま通る。
+設計判断の根拠は [docs/DESIGN.md](docs/DESIGN.md) §5。
+
 ## 検証ツール
 
 ```
