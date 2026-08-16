@@ -214,21 +214,52 @@ extract_layers.py folder.clip から 3 レイヤ + manifest.json
 
 `tests/test_imgdoc.py` に 14 件。`python -m pytest tests -q`。
 
-### ⑦ 次にやること
+### ⑦ C++ の共通面・部分読み・Python 拡張 — 完了
 
-- **C++ の共通面** (`imgdoc::Document` / `Layer`)。Python で形が固まったので写せる
-- **clipparse の Python バインディング** (pybind11)。`imgdoc.py` と同じ名前を実装すれば
-  そのまま差し替わる
-- C++ の部分読み (`layerRegion`)
-- W1 (属性編集) を `clip_write.py` に足す (CSP 確認が通ったので安全)
+**C++ に合成器を実装** (`clipparse/clipcomposite.cpp`)。Python の参照実装を写した。
+20 サンプルで**合成結果がバイト一致**し、`CanvasPreview` との一致度も
+Python 版と同等以上。**tama.clip (60MB) の合成が 119 秒 → 5.8 秒 (約 20 倍)**。
 
-### ④ C++ 移植 → 共通 API → CLIP→PSD 変換
+> 丸めは numpy の `np.round` に合わせて**偶数丸め**にしてある。
+> `floor(x+0.5)` だとちょうど .5 の画素だけ 1 ずれて参照実装と食い違う。
 
-アルゴリズムは実証済みなので写経に近い。SQLite は amalgamation 同梱 +
-`sqlite3_deserialize(..., SQLITE_DESERIALIZE_READONLY)` で mmap 上をゼロコピー参照。
-ロードマップ全体は [DESIGN.md](DESIGN.md) §8。
+**部分読み** `layerRegion(i, rect)` を実装。**重なる 256x256 タイルだけを展開する**。
+PSD は行 RLE なので同じことができない、CLIP 固有の利点。
 
----
+**Python 拡張** (`python/clipparse_module.cpp`, pybind11)。
+
+```powershell
+cmake -S . -B build-py -DCLIPPARSE_BUILD_PYTHON=ON `
+      -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+cmake --build build-py --config Release
+$env:PYTHONPATH="D:	est\clipparseuild-py\python\Release"
+```
+
+`tools/imgdoc.py` は拡張があればそちらを使う (`imgdoc.BACKEND`)。
+両バックエンドの一致は `tests/test_imgdoc.py::test_backends_agree` が見ている。
+
+> 罠: リポジトリ直下の `clipparse/` (C++ ソース) が namespace package として
+> import できてしまう。`hasattr(_cpp, "ClipFile")` まで確かめる必要がある。
+
+### ⑧ W1 (レイヤ属性の編集) — 完了
+
+```
+clip_write.py set IN.clip OUT.clip --layer 5 --opacity 64 --name 新名 --composite 2
+```
+
+名前 / 表示 / 不透明度 / 合成モード / クリッピング / フォルダビット。
+SQLite の UPDATE だけなので `ExternalChunk.Offset` は動かない。
+
+### ⑨ 残っているもの
+
+- **W2 (画素の差し替え) / W3 (レイヤ追加)**。土台 (オフセット再計算) は
+  `clip_write.py` にあり、CSP がサムネイルを再生成することも確認済みなので、
+  レイヤ追加は 100% ミップだけ作れば足りる
+- **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
+- **クリッピングの縁 168 画素**
+- **ベクタ**はブラシエンジンが要るので当面やらない
+- C++ 側の `imgdoc` 相当 (純粋仮想の共通面)。Python で形が固まったので写せるが、
+  C++ で両形式を混ぜて使う具体的な需要が出てから作るのでも遅くない
 
 ## リポジトリの状態
 
@@ -247,11 +278,16 @@ docs/SAMPLE_REQUESTS_2.md    CSP サンプル依頼 第 2 弾 (完了)
 docs/SAMPLE_REQUESTS_3.md    CSP サンプル依頼 第 3 弾 (完了)
 docs/WRITE_TEST.md           書き込み経路の CSP 確認手順
 docs/STATUS.md               このファイル
-clipparse/                   C++17 本体 (clipbase.h / clipfile.h/.cpp / clip_cli.cpp)
+clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
 tools/clip_probe.py          構造ダンプ (標準ライブラリのみ)
 tools/clip_lazy_demo.py      遅延参照プロトタイプ + 回帰テスト (仕様の基準)
 tools/clip_write.py          書き出し (往復 / 属性編集 / チャンク再配置)
+tools/clip_to_psd.py         CLIP -> PSD 変換
+tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
+tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
+tests/test_imgdoc.py         共通面のテスト 16 件
+python/clipparse_module.cpp  pybind11 バインディング
 samples/                     gitignore 済み。実ファイル置き場
 ```
 

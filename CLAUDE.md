@@ -29,8 +29,9 @@ build\clipparse\Release\clip_cli.exe samples\test000.clip --check
 # 書き込み経路 (無変更往復はバイト一致するのが正)
 python tools/clip_write.py roundtrip samples/opacity.clip out.clip
 
-# 回帰テスト (これが唯一。ピクセル完全一致なら exit 0)
+# 回帰テスト
 python tools/clip_lazy_demo.py samples/test000.clip --compare samples/test000.png
+python -m pytest tests -q
 
 # 構造ダンプ (標準ライブラリのみ)
 python tools/clip_probe.py path/to/file.clip
@@ -81,7 +82,12 @@ python tools/clip_probe.py path/to/file.clip --blocks    # ブロックサブレ
 - 変更を入れたら `clip_lazy_demo.py --compare` がピクセル一致 (exit 0) のままか確認する。
   これが現状唯一の回帰テスト。
 - **C++ を変更したら Python 版と画素バイト一致するか確かめる。** これが C++ 側の
-  唯一の正しさの担保 (`clip_cli --dump-offscreen ID out.raw` と
-  `clip_lazy_demo.ClipFile.offscreen_image()` を突き合わせる)。
+  唯一の正しさの担保。`clip_cli --merged out.raw` / `--dump-offscreen ID out.raw` を
+  `clip_lazy_demo` の出力と突き合わせる。拡張をビルドしてあれば
+  `pytest tests` の `test_backends_agree` が同じことを自動でやる。
+- **C++ の丸めは偶数丸め (`nearbyint`)**。numpy の `np.round` に合わせてある。
+  `floor(x+0.5)` にすると参照実装と 1 ずれる画素が出る。
+- 合成の式は `clipcomposite.cpp` と `clip_lazy_demo.py` の**両方**にある。
+  片方だけ直さないこと。
 - `ExternalChunk.ExternalID` は **BLOB 宣言だが値は TEXT**。bytes を束縛して
   UPDATE すると 1 行もマッチせず黙って失敗する (`tools/clip_write.py` の教訓)。
