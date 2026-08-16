@@ -186,40 +186,136 @@ for (int i = 0; i < blockIndex; ++i) rel += attr.blockSizes[i];
 
 ---
 
-## 5. 共通 API (psdparse と揃えられる部分)
+## 5. 共通 API — psdparse と揃えるか、別の形にするか [検討結果]
 
-「PSD と CLIP を同じ顔で触る」ための最小共通面。psdparse の Python API に寄せる。
+**結論: psdparse スタイルで揃える。** ただし共通面は**小さく・ツリー主体**にし、
+4 点だけ psdparse の形をそのままは踏襲しない。CLIP 側で取り切れない情報は
+存在するが、それは **PSD に概念が無いもの**なので、どんな API を設計しても
+共通化できない。素直に形式固有面へ置く。
 
-### 5.1 共通化できる
+### 5.1 判断の根拠 (実測)
+
+**根拠 1: 既存ツールが実際に使っている API は狭い。**
+
+psdparse の `examples/` と `tools/` が参照しているメンバを数えた:
+
+```
+layers / header(width,height) / layer_type / width / height / visible /
+opacity / top / left / parent_index / parent / name_unicode /
+layer_image / merged_image / merged_alpha / blend_mode / blend_mode_key /
+load / save / set_merged_image
+```
+
+**約 15 項目で、CLIP はそのすべてを出せる。** 転用の価値はここに集中しており、
+ここさえ揃えば `composite.py` / `variations.py` / `extract_layers.py` /
+`psd_export.py` はそのまま動く。
+(PSD 固有の `layer_comps` / `effects` / `comp_states` を使う部分だけ分岐が要る)
+
+**根拠 2: 静止画の範囲では、写せない列はほぼ「CSP 内部の描画キャッシュ状態」。**
+
+`Layer` テーブルの「値が入っている列」を psdparse の `LayerInfo` へ写せるかで
+分類した:
+
+| ファイル | 値のある列 | 写せる | 写せない |
+|---|---|---|---|
+| `tama.clip` (静止画) | 36 | 24 | 12 |
+| `nazoani01_ja.clip` (アニメ) | 48 | 26 | 22 |
+
+`tama` の「写せない 12」の内訳は、**8 個が `*Type` の描画ダーティフラグ**
+(`DrawToRenderOffscreenType`, `DrawToRenderMipmapType`, `SetRenderThumbnailInfoType` …)
+で、文書の内容ではなく CSP の再描画管理の状態。残る 4 個は `DrawColor*`
+(描画色) で、これは PSD なら塗りつぶしレイヤの descriptor に相当する概念がある。
+
+→ **静止画については psdparse のモデルで実質取り切れている。**
+
+**根拠 3: 取り切れないのは PSD に概念が無いもの。**
+
+`nazoani` の「写せない 22」は `AnimationFolder` / `TimeLine*` (8 列) /
+`AudioLayer` / `FirstLayerObject` / `BankItemUuid` など、**アニメーションと
+タイムライン**。ほかに 3D・定規・ブラシ・ベクタも同様。
+
+これらは「API の形を変えれば拾える」類ではない。**PSD 側に受け皿が無い**ので、
+共通面に入れても意味がなく、`clip::ClipFile` の固有 API に置くのが正しい。
+
+### 5.2 psdparse の形をそのままは踏襲しない 4 点
+
+**(1) 共通面はツリーを主にする。**
+
+psdparse の `layerList` は PSD のファイル形式そのままの表現 —
+**平坦なリスト + フォルダを表す区切り/フォルダのマーカー対**。
+CLIP でこれを再現すると、実体のないマーカーレイヤを合成して番号を詰める
+ことになり、CLIP 側の情報 (本物のツリー) をわざわざ壊してから復元する形になる。
+
+共通面は `children` / `parent` を**主**にし、平坦リストは派生ビューにする。
+psdparse は既に `parent_index` を計算しているので提供できる。
+PSD のマーカー対方式は `psd::PSDFile` の実装詳細として隠す。
+
+**(2) 不透明度は 0..255 に正規化する。**
+
+CLIP は **0..256**。共通面では `opacity` を 0..255 に丸め、
+生値は `clip::LayerInfo::opacityRaw` として固有面に出す。
+
+**(3) 合成モードは共通 enum を作る。**
+
+psdparse の `BlendMode` を土台にできる (CLIP の 27 種のうち 25 種は PSD 側にある)。
+足りないのは CSP の「発光」付き 2 種で、これは**式ではなく α の入れ方が違う**
+(CLIP_FORMAT.md §9.1)。共通 enum に `GLOW_DODGE` / `GLOW_ADD` を足し、
+PSD へ落とすときは対応する通常モードへ倒す (半透明部が非可逆になる旨を伝える)。
+
+**(4) 編集 API は名前を揃えるが、保証は揃えない。**
+
+`set_layer_name` / `set_layer_pixels` / `add_layer` といった**名前と意味は揃える**。
+ただし psdparse の売りである「**無変更部分は生バイトのまま、往復バイト一致**」は
+形式ごとに事情が違う:
+
+| | psdparse (PSD) | clipparse (CLIP) |
+|---|---|---|
+| 無変更の往復 | バイト一致 | バイト一致 (実測済み) |
+| 属性だけ変更 | 触ったレイヤだけ再直列化 | SQLite の UPDATE のみ。**オフセットは動かない** |
+| 画素の差し替え | 該当チャンネルだけ再構築 | チャンク再配置 + `ExternalChunk.Offset` 全更新が**必ず**要る |
+| レイヤ追加 | レイヤ 1 枚を作るだけ | `Layer` + `Offscreen` × ミップ段 + `Mipmap`/`MipmapInfo`/`LayerThumbnail` + `ElemScheme` の採番 |
+
+**共通面には編集を入れず、読み取りに絞るのが安全**だと考えている。
+編集は各形式の具象クラスで、名前だけ揃えて出す。
+
+### 5.3 CLIP にだけ必要で、共通面に入れないもの
+
+- **SQLite の動的ビュー** — psdparse の `descriptor` / `image_resource` 生アクセスに
+  相当するが、CLIP は**クエリできる**分ずっと強い。`Layer` だけで 52〜113 列あり
+  バージョンで増減するので、**モデル化しないで到達できる**経路は必須。
+  `clip::ClipFile::db()` と型なしテーブルビューで出す
+- **ミップ段の指定読み** (`ThisScale` 100/50/25/…) — PSD に無い
+- **ブロック単位の部分読み** (`layerRegion`) — CLIP は 256x256 タイル単位で
+  読めるが、PSD は行 RLE なので全展開してから切り出すことになる。
+  **同じシグネチャで出せるがコストモデルが違う**点は明記する
+- タイムライン / 3D / 定規 / ブラシ / ベクタ
+
+### 5.4 共通面の素案
+
+読み取りに絞った最小面。psdparse の名前をそのまま使う。
 
 | 概念 | 共通 API | PSD | CLIP |
 |---|---|---|---|
-| 文書 | `width`, `height`, `resolution` | header | `Canvas` |
-| レイヤ列 | `layers[]` (下から上) | `layerList` | `Layer` リンクリストを解決 |
-| 階層 | `parent`, `children`, `is_group` | lsct 区切り | `LayerFolder` bit0 |
+| 文書 | `width` `height` `resolution` | header | ルートフォルダの 100% ミップ + `Canvas` |
+| レイヤ | `layers` (平坦・下から上) | `layerList` | `Layer` リンクリストを解決 |
+| 階層 | `parent` `children` `is_group` | マーカー対から復元 | そのまま |
 | 名前 | `name` (UTF-8) | `luni` | `LayerName` |
 | 可視 | `visible` | flag bit1 の反転 | `LayerVisibility` |
-| 不透明度 | `opacity` (0..255 に正規化) | 0..255 | `LayerOpacity` 0..**256** → `round(v*255/256)` |
+| 不透明度 | `opacity` (0..255) | そのまま | `LayerOpacity` を丸める |
 | 合成モード | `blend_mode` (共通 enum) | 4 文字キー | `LayerComposite` |
 | クリッピング | `clipping` | `clipping` | `LayerClip` |
-| 矩形 | `bounds` = (left, top, width, height) | レイヤ矩形 | `LayerOffsetX/Y` + offscreen の w/h |
-| 画素取得 | `layer_image(i, mode)` → RGBA/BGRA bytes | チャンネル合成 | ブロック合成 |
+| 矩形 | `bounds` = (left, top, w, h) | レイヤ矩形 | `LayerOffsetX/Y` + offscreen |
+| 画素 | `layer_image(i, mode)` | チャンネル合成 | ブロック合成 |
 | 合成画像 | `merged_image()` | image data section | `CanvasPreview` / 自前合成 |
-| マスク | `mask` (矩形 + 画素) | layer mask | `LayerLayerMaskMipmap` 経由の offscreen |
-| テキスト | `text` (本文 + ラン) | EngineData | `TextLayerString` + `TextLayerAttributes` |
+| プレビュー | `preview_image()` | サムネイル image resource | `CanvasPreview` |
+| マスク | `mask` (矩形 + 画素) | layer mask | マスク用ミップ連鎖 |
+| テキスト | `text` (本文 + ラン) | EngineData | `TextLayerString` + TLV |
 
-### 5.2 共通化できない (各形式固有)
+`preview_image()` は **両形式にあって psdparse がまだ共通化していない**もの。
+CLIP の `CanvasPreview` は完成画そのもの (合成の正解合わせに使っている) で、
+PSD にもサムネイル image resource がある。共通面に入れる価値が高い。
 
-- PSD 固有: 画像リソース、レイヤカンプ、Descriptor、レイヤ効果 (lfx2)、ブレンド範囲
-- CLIP 固有: ミップマップ階層、ベクタレイヤ、ブラシ定義、3D/カメラ/タイムライン、
-  定規、パススルー (`PASS_THROUGH` は PSD の `pass` に対応するが挙動差あり)
-
-**設計方針**: 共通面は `imgdoc::Document` / `imgdoc::Layer` のような
-純粋仮想インタフェース (またはヘッダオンリーのコンセプト) にし、
-`psd::PSDFile` と `clip::ClipFile` がそれを実装する。
-固有機能は各具象クラスの API として素で出す (共通面に押し込めない)。
-
-### 5.3 合成モード対応表
+### 5.5 合成モード対応表
 
 | CLIP `LayerComposite` | PSD キー | 備考 |
 |---|---|---|
