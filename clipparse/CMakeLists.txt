@@ -51,6 +51,11 @@ add_library(${PROJECT_NAME} STATIC
     clipfile.h
     clipfile.cpp
     clipcomposite.cpp
+    clipencode.h
+    clipencode.cpp
+    clipwrite.h
+    clipwrite.cpp
+    clipvalidate.cpp
 )
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
