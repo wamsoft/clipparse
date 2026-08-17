@@ -108,6 +108,25 @@ SQLite は `sqlite3_deserialize(RESIZEABLE)` で**書けるメモリ DB** にし
 **CSP で開く前に必ず通すこと** — ここに引っかかる種類の間違いは、
 寛容なリーダでは読めてしまうのに CSP では落ちたり全面透明になったりする。
 
+## CLIP ⇄ PSD 変換コマンド (C++)
+
+`examples/clipconv/` に**両方のライブラリを参照する側**のサンプルがある。
+どちらのライブラリもこのコマンドのために特別な口を持っていない
+— 公開 API だけで書いてある。
+
+```powershell
+cmake -S examples/clipconv -B build-conv -DCMAKE_BUILD_TYPE=Release
+cmake --build build-conv --config Release
+
+build-conv\Release\clipconv.exe in.clip out.psd  --verify
+build-conv\Release\clipconv.exe in.psd  out.clip --verify
+```
+
+CLIP → PSD → CLIP の往復で **13 サンプルすべて合成結果がバイト一致**。
+`tama.clip` (60MB / 72 層) で CLIP → PSD が **13.9 秒** (Python 版は 2 分 11 秒)、
+PSD → CLIP が **45.6 秒** (同 1 分 22 秒)。
+詳細と制限は [examples/clipconv/README.md](examples/clipconv/README.md)。
+
 ## psdparse 互換で読む
 
 `tools/imgdoc.py` が psdparse 互換の読み取り面を `.clip` に被せる。

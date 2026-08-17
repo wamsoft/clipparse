@@ -412,3 +412,41 @@ def test_cpp_mip_levels_match_python(tmp_path):
             assert got == levels, mm
             assert count == len(levels)
     c.close()
+
+
+# --- 外部サンプル (examples/clipconv) ---------------------------------------
+
+def _clipconv():
+    exe = os.path.join(ROOT, "build-conv", "Release", "clipconv.exe")
+    if not os.path.exists(exe):
+        exe = os.path.join(ROOT, "build-conv", "clipconv")
+    if not os.path.exists(exe):
+        pytest.skip("clipconv が未ビルド (cmake -S examples/clipconv -B build-conv)")
+    return exe
+
+
+@pytest.mark.parametrize("name", ["folder.clip", "blend2.clip", "text.clip"])
+def test_clipconv_roundtrip_matches_the_composite(tmp_path, name):
+    """C++ の変換コマンドで CLIP -> PSD -> CLIP が合成までバイト一致すること。"""
+    imgdoc = pytest.importorskip("imgdoc")
+    exe = _clipconv()
+    src = _sample(name)
+    psd = str(tmp_path / "mid.psd")
+    back = str(tmp_path / "back.clip")
+    tmpl = _sample("emptyimage.clip")
+
+    r = subprocess.run([exe, src, psd, "--verify"], capture_output=True)
+    assert r.returncode == 0, r.stdout.decode("utf-8", "replace")
+    r = subprocess.run([exe, psd, back, "--template", tmpl, "--verify"],
+                       capture_output=True)
+    assert r.returncode == 0, r.stdout.decode("utf-8", "replace")
+
+    a, b = imgdoc.open(src), imgdoc.open(back)
+    assert [l.name_unicode for l in a.layers] == [l.name_unicode for l in b.layers]
+    H, W = a.header.height, a.header.width
+    ia = np.frombuffer(a.merged_image(), np.uint8).reshape(H, W, 4).astype(int)
+    ib = np.frombuffer(b.merged_image(), np.uint8).reshape(H, W, 4).astype(int)
+    vis = (ia[..., 3] > 0) | (ib[..., 3] > 0)
+    d = np.abs(ia - ib)
+    d[..., :3] *= vis[..., None]
+    assert d.max() == 0

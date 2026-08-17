@@ -429,7 +429,32 @@ Python バインディングもある (`clipparse.ClipWriter` / `clipparse.valid
 > **Windows の `main` の argv はアクティブコードページ**なので、
 > 日本語のレイヤ名は `CommandLineToArgvW` から取り直して UTF-8 に直す。
 
-### ⑭ 残っているもの
+### ⑭ CLIP ⇄ PSD 変換コマンド (C++) — 完了
+
+`examples/clipconv/`。**clipparse と psdparse の両方を参照する外部サンプル**で、
+どちらのライブラリにも専用の口を足していない (公開 API だけで書ける形になった)。
+
+```powershell
+cmake -S examples/clipconv -B build-conv -DCMAKE_BUILD_TYPE=Release
+cmake --build build-conv --config Release
+build-conv\Release\clipconv.exe in.clip out.psd --verify
+build-conv\Release\clipconv.exe in.psd out.clip --verify
+```
+
+| | |
+|---|---|
+| 往復 | CLIP → PSD → CLIP で **13 サンプルすべて合成結果がバイト一致** |
+| Python 版との一致 | `folder` / `blend2` の PSD が **sha256 一致**、PSD→CLIP のチャンクが**ペイロード一致** |
+| 速度 (tama 60MB) | CLIP→PSD **13.9 秒** (Python 2 分 11 秒) / PSD→CLIP **45.6 秒** (同 1 分 22 秒) |
+
+Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接矩形で PSD へ置く**
+(Python 版はキャンバス全面)。C++ 版の方が PSD が小さくなる。合成結果は同じ。
+
+> 調整レイヤを持つファイルは**見た目が往復しない** (`tama.clip` の
+> トーンカーブ / カラーバランスなど)。CLIP→PSD が調整レイヤを落とす既知の制限で、
+> Python 版も同じ。レイヤの画素とツリーは保たれる。
+
+### ⑮ 残っているもの
 
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
@@ -459,6 +484,7 @@ docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 1 巡目完了
 docs/WRITE_TEST_4.md         同 その 4 (2 巡目 — 完了)
 docs/WRITE_TEST_5.md         同 その 5 (3 巡目 — 全項目 OK)
 docs/STATUS.md               このファイル
+examples/clipconv/           CLIP <-> PSD 変換コマンド (psdparse も参照する外部サンプル)
 clipparse/                   C++17 本体
   clipfile / clipcomposite     読む側 (遅延参照・合成)
   clipencode / clipwrite       書く側 (ブロック生成・レイヤ編集・PNG)
