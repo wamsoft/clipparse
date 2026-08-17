@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-17 / フェーズ **P0 完了 → 書き込み (W2/W3) 実装完了・CSP 確認待ち**
+最終更新: 2026-08-17 / フェーズ **P0 完了 → 書き込み (W1〜W4) 実装完了・CSP 確認待ち**
 
 ---
 
@@ -277,13 +277,53 @@ encode→decode 往復が合成画像・実ブロックとも**完全一致**す
 > `--checksum zero|crc32|none` の 3 通りで書き分けられるようにして、
 > **CSP が検査しているかどうかを実機で切り分ける**方針にした。
 
-### ⑨ 残っているもの
+### ⑨ W4: PSD → CLIP 変換 — 実装完了
+
+```powershell
+python tools/psd_to_clip.py in.psd out.clip --verify
+python tools/psd_to_clip.py in.psd out.clip --paper      # 用紙レイヤを残す
+```
+
+`tools/clip_build.py` が土台。**空の `.clip` を雛形にキャンバスごと作り替える**:
+
+1. `samples/emptyimage.clip` を開く
+2. `resize_canvas` でキャンバスを PSD の寸法へ (ミップ連鎖の段数・各段の
+   `Attribute` を全部作り直す)
+3. PSD のツリーを下から積む (フォルダも作る)
+4. 雛形の 用紙 / レイヤー 1 を消す
+
+**ミップ段数の実測則** (5 ファイルで一致、`docs/CLIP_FORMAT.md` §2.3):
+100% から `//2` で縮小し、**グリッドが 1x1 になった段の次の段まで**。
+サムネイルはキャンバス寸法によらず **512x512 固定**。
+
+| | |
+|---|---|
+| 往復 (CLIP → PSD → CLIP) | サンプル 30 本中 **20 本で合成結果がバイト一致**。残り 10 本の差は**全て調整レイヤ** (CLIP→PSD の既知の制限) と覆い焼き(発光)のα で説明が付く |
+| 大物 | `tama.clip` (72 層 / フォルダ 10 / 60MB) が往復し、レイヤ画素 max=0・ツリー一致 |
+| `Attribute` の作り替え | 実ファイルの 255 個を同じ寸法で作り直すと**バイト一致** |
+
+**CSP 実機での確認は [WRITE_TEST_3.md](WRITE_TEST_3.md) 待ち。**
+
+#### 往復の途中で見つかった不具合 (いずれも修正済み)
+
+1. **psdparse が「カラー比較 (明)」の PSD キーを `ltCl` としていた**。
+   正しくは **`lgCl`** (psd_tools・仕様書と一致)。読み込みで
+   `BLEND_MODE_INVALID` になり、往復でモードが「通常」に落ちていた。
+   `psdparse/psddata.h` で両方受けるようにした
+2. **チャンネル順**。psdparse も CLIP と同じ **BGRA** で返すのに RGBA として
+   扱っていた。検証側も同じ間違いをしていて**互いに打ち消し合い max=0 に見えていた**
+   — 合成結果を元ファイルと突き合わせて初めて出た
+3. **不透明度の往復で 1 ずれる**。CLIP 0..256 / PSD 0..255 は段数が違うので
+   厳密には 1 対 1 にならない。`clip_to_psd` の切り捨てに対して
+   **切り上げ**を返すと `c=1` 以外は元に戻る
+
+### ⑩ 残っているもの
 
 - **`BlockCheckSum` の扱い**。CSP が検査していなければ `zero` 固定で確定
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
-- **W4: PSD → CLIP 変換**。W2/W3 が CSP で通れば `emptyimage.clip` を
-  テンプレートにして組める (DESIGN.md §6.1)
+- **PSD → CLIP でマスク・テキスト・調整レイヤを「編集可能なまま」持ち込む**
+  (現状はラスタとして焼き込まれる)
 - **ベクタ**はブラシエンジンが要るので当面やらない
 - C++ 側の `imgdoc` 相当 (純粋仮想の共通面)。Python で形が固まったので写せるが、
   C++ で両形式を混ぜて使う具体的な需要が出てから作るのでも遅くない
@@ -304,6 +344,7 @@ docs/SAMPLE_REQUESTS_2.md    CSP サンプル依頼 第 2 弾 (完了)
 docs/SAMPLE_REQUESTS_3.md    CSP サンプル依頼 第 3 弾 (完了)
 docs/WRITE_TEST.md           書き込み経路の CSP 確認手順 (往復/属性/削除 — 確認済み)
 docs/WRITE_TEST_2.md         同 その 2 (画素差し替え/レイヤ追加 — 確認待ち)
+docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 確認待ち)
 docs/STATUS.md               このファイル
 clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
@@ -311,10 +352,13 @@ tools/clip_probe.py          構造ダンプ (標準ライブラリのみ)
 tools/clip_lazy_demo.py      遅延参照プロトタイプ + 回帰テスト (仕様の基準)
 tools/clip_write.py          書き出し (往復 / 属性編集 / 画素差し替え / レイヤ追加)
 tools/clip_encode.py         ピクセルブロックを書く側 (decode_block の逆写像)
+tools/clip_build.py          キャンバスの寸法ごと作り替える (W4 の土台)
+tools/psd_to_clip.py         PSD -> CLIP 変換
 tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
 tests/test_imgdoc.py         共通面のテスト 16 件
+tests/test_write.py          書き込み経路のテスト 12 件
 python/clipparse_module.cpp  pybind11 バインディング
 samples/                     gitignore 済み。実ファイル置き場
 ```
