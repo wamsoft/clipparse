@@ -427,7 +427,9 @@ namespace clip {
 
   // ---- Offscreen.Attribute ------------------------------------------------
 
-  static bool parseAttribute(const uint8_t *a, int len, OffscreenAttr &out) {
+  // clipencode.h が同じものを使う (書く側の Attribute 解析)。
+  // **InitColor の末尾が可変長**なのがここの肝。
+  bool parseAttribute(const uint8_t *a, int len, OffscreenAttr &out) {
     if (len < 16) return false;
     int p = 16;                                   // section_sizes[4] を飛ばす
     const char *names[3] = { "Parameter", "InitColor", "BlockSize" };
