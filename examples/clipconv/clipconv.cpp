@@ -22,7 +22,9 @@
 #include "psdfile.h"
 
 #include <algorithm>
+#include <cctype>       // tolower
 #include <cstdio>
+#include <cstdlib>      // abs
 #include <cstring>
 #include <string>
 #include <vector>

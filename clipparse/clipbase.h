@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>      // memcpy。MSVC / Apple clang は間接的に入るが GCC は入らない
 #include <string>
 #include <vector>
 
