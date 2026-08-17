@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-16 / フェーズ **P0 (調査) 完了 → ② 合成の詰めを実施中**
+最終更新: 2026-08-17 / フェーズ **P0 完了 → 書き込み (W2/W3) 実装完了・CSP 確認待ち**
 
 ---
 
@@ -241,30 +241,56 @@ $env:PYTHONPATH="D:	est\clipparseuild-py\python\Release"
 > 罠: リポジトリ直下の `clipparse/` (C++ ソース) が namespace package として
 > import できてしまう。`hasattr(_cpp, "ClipFile")` まで確かめる必要がある。
 
-### ⑧ W1 (レイヤ属性の編集) — 完了
+### ⑧ W1 (レイヤ属性の編集) / W2 (画素の差し替え) / W3 (レイヤ追加) — 実装完了
 
-```
-clip_write.py set IN.clip OUT.clip --layer 5 --opacity 64 --name 新名 --composite 2
+```powershell
+# W1: 属性。SQLite の UPDATE のみ (ExternalChunk.Offset は動かない)
+python tools/clip_write.py set IN.clip OUT.clip --layer 5 --opacity 64 --name 新名 --composite 2
+
+# W2: 既存レイヤの画素を PNG で丸ごと差し替え
+python tools/clip_write.py setpixels IN.clip OUT.clip --layer 3 --png patch.png
+
+# W3: 既存レイヤを雛形にレイヤを 1 枚足す (--png 省略で空レイヤ)
+python tools/clip_write.py addlayer IN.clip OUT.clip --copy-from 3 --name 追加 --png patch.png
 ```
 
-名前 / 表示 / 不透明度 / 合成モード / クリッピング / フォルダビット。
-SQLite の UPDATE だけなので `ExternalChunk.Offset` は動かない。
+**W2 の中身**は `tools/clip_encode.py`。`clip_lazy_demo.decode_block` の逆写像で、
+アルファ面の 4x4 畳み込み → zlib → ブロックサブレコード → `BlockSize[]` の
+書き戻し → `ExternalChunk.Offset` 全再計算まで。
+encode→decode 往復が合成画像・実ブロックとも**完全一致**する。
+
+**W3 の方針**: `Layer` は 57 列、`LayerThumbnail` は 43 列あり、CSP が期待する
+既定値の大半は意味が分からない。**列挙せず既存行を丸ごと複製**して、ID と
+リンクと画素だけ差し替える。`MainId` は `ElemScheme.MaxIndex` から採番し、
+ミップ 3 段 (`Mipmap` + `MipmapInfo` + `Offscreen`) とサムネイルも複製、
+`LayerFirstChildIndex` / `LayerNextIndex` の兄弟連鎖へ挿し込む。
+画素は 100% 段にだけ書く (縮小段に画素が無いのは実ファイルでも同じ)。
+
+読み戻しは自前リーダ・C++ 実装とも入力 PNG と **max=0**、
+`clip_cli --check` も 11 ファイルすべて異常 0。
+**CSP 実機での確認は [WRITE_TEST_2.md](WRITE_TEST_2.md) 待ち。**
+
+> **未解決: `BlockCheckSum` の算法。** 画素ありブロックは必ず非ゼロ
+> (17,185/17,185)、空ブロックは必ずゼロ (148,874/148,874)。CRC32 / ~CRC32 /
+> Adler32 / Fletcher32 / FNV-1a / CRC32C / 各種 sum・xor を展開後・圧縮後・
+> レコード全体に対して総当たりしたが**どれも一致しない**。CSP 独自と見ている。
+> `--checksum zero|crc32|none` の 3 通りで書き分けられるようにして、
+> **CSP が検査しているかどうかを実機で切り分ける**方針にした。
 
 ### ⑨ 残っているもの
 
-- **W2 (画素の差し替え) / W3 (レイヤ追加)**。土台 (オフセット再計算) は
-  `clip_write.py` にあり、CSP がサムネイルを再生成することも確認済みなので、
-  レイヤ追加は 100% ミップだけ作れば足りる
+- **`BlockCheckSum` の扱い**。CSP が検査していなければ `zero` 固定で確定
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
+- **W4: PSD → CLIP 変換**。W2/W3 が CSP で通れば `emptyimage.clip` を
+  テンプレートにして組める (DESIGN.md §6.1)
 - **ベクタ**はブラシエンジンが要るので当面やらない
 - C++ 側の `imgdoc` 相当 (純粋仮想の共通面)。Python で形が固まったので写せるが、
   C++ で両形式を混ぜて使う具体的な需要が出てから作るのでも遅くない
 
 ## リポジトリの状態
 
-**全ファイル未コミット** (`git status` が `??` だらけ、master にコミット 0 件)。
-コミットするかはユーザー判断待ち。
+`master` にコミット済み。`samples/` と `build*/` は gitignore。
 
 ```
 CLAUDE.md                    リポジトリ運用の指針
@@ -276,13 +302,15 @@ docs/CLIP_TOOLS_REPORT.md    clip-tools への報告 (英語、未送付)
 docs/SAMPLE_REQUESTS.md      CSP サンプル依頼 第 1 弾 (完了)
 docs/SAMPLE_REQUESTS_2.md    CSP サンプル依頼 第 2 弾 (完了)
 docs/SAMPLE_REQUESTS_3.md    CSP サンプル依頼 第 3 弾 (完了)
-docs/WRITE_TEST.md           書き込み経路の CSP 確認手順
+docs/WRITE_TEST.md           書き込み経路の CSP 確認手順 (往復/属性/削除 — 確認済み)
+docs/WRITE_TEST_2.md         同 その 2 (画素差し替え/レイヤ追加 — 確認待ち)
 docs/STATUS.md               このファイル
 clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
 tools/clip_probe.py          構造ダンプ (標準ライブラリのみ)
 tools/clip_lazy_demo.py      遅延参照プロトタイプ + 回帰テスト (仕様の基準)
-tools/clip_write.py          書き出し (往復 / 属性編集 / チャンク再配置)
+tools/clip_write.py          書き出し (往復 / 属性編集 / 画素差し替え / レイヤ追加)
+tools/clip_encode.py         ピクセルブロックを書く側 (decode_block の逆写像)
 tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
