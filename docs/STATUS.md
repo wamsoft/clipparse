@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) が CSP 実機で全項目 OK。読み書き両方が実用段階**
+最終更新: 2026-08-17 / フェーズ **書き込みが CSP 実機で全項目 OK。C++ 側にも移植済み**
 
 ---
 
@@ -390,7 +390,46 @@ CSP 5.0.4 で実用段階**:
 
 **書いたら必ず `python tools/clip_validate.py OUT.clip` を通すこと。**
 
-### ⑬ 残っているもの
+### ⑬ 書く側の C++ 移植 — 完了
+
+`clipparse/clipencode.{h,cpp}` / `clipwrite.{h,cpp}` / `clipvalidate.cpp`。
+Python 版 (`tools/clip_write.py` + `clip_encode.py` + `clip_build.py` +
+`clip_validate.py`) と同じことをする。
+
+```powershell
+build\clipparse\Release\clip_cli.exe in.clip --validate
+build\clipparse\Release\clip_cli.exe in.clip --roundtrip out.clip
+build\clipparse\Release\clip_cli.exe in.clip --set 5 --opacity 64 --out out.clip
+build\clipparse\Release\clip_cli.exe in.clip --set-pixels 3 rgba.raw out.clip
+build\clipparse\Release\clip_cli.exe in.clip --add-layer  3 rgba.raw out.clip --name 追加
+```
+
+Python バインディングもある (`clipparse.ClipWriter` / `clipparse.validate`)。
+
+| | |
+|---|---|
+| SQLite | `sqlite3_deserialize(RESIZEABLE)` で**書けるメモリ DB** にし、`sqlite3_serialize` で取り出す。一時ファイルを作らない (Python 版は temp ファイル経由) |
+| 行の複製 | `PRAGMA table_info` + `sqlite3_bind_value` で**格納型ごと**写す。`Layer` 57 列の既定値を当てずっぽうで書かずに済む |
+| PNG | `CanvasPreview` 用に zlib だけで書く最小実装 (フィルタは全行 0) |
+
+**正しさの担保**: C++ と Python が書いたファイルは
+**`CHNKExta` のペイロードがバイト一致する** (zlib の出力まで同じ)。
+外部 ID は乱数なので比較はペイロードの集合で行う。
+`tests/test_write.py` に 7 件足してある。
+
+| | |
+|---|---|
+| 無変更往復 | `tama.clip` (60MB) で **sha256 一致 / 0.14 秒** (Python は 0.46 秒) |
+| 画素の差し替え | 2894x4093 / 192 ブロックで**チャンクがバイト一致 / 0.53 秒** (Python は 1.05 秒。zlib 律速なので差は小さい) |
+| 検査 | `clip_cli --validate` が実ファイル 42 本すべてで異常 0 |
+
+> 罠 2 件 (どちらも Python 移植時と同じ):
+> **`Offscreen.BlockData` は `sqlite3_bind_blob`** で入れること
+> (`bind_text` だと CSP がそのレイヤを全面透明として開く)。
+> **Windows の `main` の argv はアクティブコードページ**なので、
+> 日本語のレイヤ名は `CommandLineToArgvW` から取り直して UTF-8 に直す。
+
+### ⑭ 残っているもの
 
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
@@ -420,7 +459,11 @@ docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 1 巡目完了
 docs/WRITE_TEST_4.md         同 その 4 (2 巡目 — 完了)
 docs/WRITE_TEST_5.md         同 その 5 (3 巡目 — 全項目 OK)
 docs/STATUS.md               このファイル
-clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
+clipparse/                   C++17 本体
+  clipfile / clipcomposite     読む側 (遅延参照・合成)
+  clipencode / clipwrite       書く側 (ブロック生成・レイヤ編集・PNG)
+  clipvalidate                 参照整合性の検査
+  clip_cli                     読み書き両方の CLI
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
 tools/clip_probe.py          構造ダンプ (標準ライブラリのみ)
 tools/clip_lazy_demo.py      遅延参照プロトタイプ + 回帰テスト (仕様の基準)
@@ -433,7 +476,7 @@ tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
 tests/test_imgdoc.py         共通面のテスト 16 件
-tests/test_write.py          書き込み経路のテスト 18 件 (段数・格納型・整合性の回帰込み)
+tests/test_write.py          書き込み経路のテスト 25 件 (C++ との突き合わせ込み)
 python/clipparse_module.cpp  pybind11 バインディング
 samples/                     gitignore 済み。実ファイル置き場
 ```

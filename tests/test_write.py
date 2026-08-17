@@ -250,3 +250,165 @@ def test_resize_keeps_mipmap_count_in_sync(tmp_path):
             n += 1
         assert count == n == 3, mm
     c.close()
+
+
+# --- C++ 実装との突き合わせ -------------------------------------------------
+#
+# **C++ を変更したら Python 版と一致するか確かめる** (CLAUDE.md)。書く側は
+# 「チャンクのバイト列が一致するか」で見る。ID は乱数なので中身の集合で比べる。
+
+def _cpp():
+    cpp = pytest.importorskip("clipparse")
+    if not hasattr(cpp, "ClipWriter"):
+        pytest.skip("clipparse 拡張に ClipWriter が無い")
+    return cpp
+
+
+def _payloads(path):
+    c = ClipFile(path)
+    out = sorted((bytes(v) for _e, v in c.externals), key=len)
+    c.close()
+    return out
+
+
+def test_cpp_roundtrip_is_byte_identical(tmp_path):
+    cpp = _cpp()
+    src = _sample("opacity.clip")
+    dst = str(tmp_path / "rt.clip")
+    w = cpp.ClipWriter()
+    w.load(src)
+    w.save(dst)
+    del w
+    assert open(src, "rb").read() == open(dst, "rb").read()
+
+
+def test_cpp_and_python_write_the_same_chunks(tmp_path):
+    """画素の差し替えで**チャンクのバイト列が一致**すること。"""
+    cpp = _cpp()
+    src = _sample("opacity.clip")
+    rng = np.random.default_rng(7)
+    rgba = rng.integers(0, 256, (400, 300, 4), dtype=np.uint8)
+
+    py_dst = str(tmp_path / "py.clip")
+    c = ClipFile(src)
+    add_layer(c, 3, "cross", rgba)
+    c.save(py_dst)
+    c.close()
+
+    cpp_dst = str(tmp_path / "cpp.clip")
+    w = cpp.ClipWriter()
+    w.load(src)
+    bgra = rgba[..., [2, 1, 0, 3]].tobytes()
+    w.add_layer(3, "cross", bgra, 300, 400)
+    w.save(cpp_dst)
+    del w
+
+    assert _payloads(py_dst) == _payloads(cpp_dst)
+    assert cpp.validate(py_dst) == []
+    assert cpp.validate(cpp_dst) == []
+
+
+def test_cpp_written_layer_reads_back_exactly(tmp_path):
+    cpp = _cpp()
+    imgdoc = pytest.importorskip("imgdoc")
+    rng = np.random.default_rng(8)
+    rgba = rng.integers(0, 256, (400, 300, 4), dtype=np.uint8)
+    dst = str(tmp_path / "cpp.clip")
+
+    w = cpp.ClipWriter()
+    w.load(_sample("opacity.clip"))
+    mid = w.add_layer(3, "cpp レイヤ", rgba[..., [2, 1, 0, 3]].tobytes(), 300, 400)
+    w.save(dst)
+    del w
+
+    d = imgdoc.open(dst)
+    i = [k for k, l in enumerate(d.layers) if l.main_id == mid][0]
+    got = np.frombuffer(d.layer_image(i), np.uint8).reshape(400, 300, 4)
+    assert np.array_equal(got[..., [2, 1, 0, 3]], rgba)
+    assert d.layers[i].name_unicode == "cpp レイヤ"
+
+
+def test_cpp_validate_agrees_with_python():
+    cpp = _cpp()
+    import clip_validate
+    for name in ("opacity.clip", "folder.clip", "blend2.clip", "addlayer_csp.clip"):
+        p = _sample(name)
+        assert cpp.validate(p) == []
+        assert clip_validate.validate(p, verbose=False) == []
+
+
+def test_cpp_validate_catches_a_broken_mipmap_count(tmp_path):
+    """**MipmapCount の食い違いは CSP が落ちる原因**。検査で捕まること。"""
+    cpp = _cpp()
+    import clip_validate
+    dst = str(tmp_path / "broken.clip")
+    c = ClipFile(_sample("opacity.clip"))
+    c.db.execute("UPDATE Mipmap SET MipmapCount = MipmapCount + 2")
+    c.db.commit()
+    c.save(dst)
+    c.close()
+    assert any("MipmapCount" in p for p in cpp.validate(dst))
+    assert any("MipmapCount" in p for p in clip_validate.validate(dst, verbose=False))
+
+
+def test_cpp_png_preview_matches_the_composite(tmp_path):
+    """C++ が書いた CanvasPreview が自前の合成と一致すること。"""
+    cpp = _cpp()
+    imgdoc = pytest.importorskip("imgdoc")
+    import io as _io
+
+    from PIL import Image
+    dst = str(tmp_path / "pv.clip")
+    src = _sample("folder.clip")
+
+    d = imgdoc.open(src)
+    W, H = d.header.width, d.header.height
+    merged = d.merged_image()
+    del d
+
+    w = cpp.ClipWriter()
+    w.load(src)
+    w.set_canvas_preview(merged, W, H)
+    w.save(dst)
+    del w
+
+    c = ClipFile(dst)
+    row = c.db.execute("SELECT ImageWidth, ImageHeight, ImageData"
+                       " FROM CanvasPreview").fetchone()
+    c.close()
+    assert (row[0], row[1]) == (W, H)
+    png = np.array(Image.open(_io.BytesIO(row[2])).convert("RGBA"))
+    want = np.frombuffer(merged, np.uint8).reshape(H, W, 4)[..., [2, 1, 0, 3]]
+    assert np.array_equal(png, want)
+
+
+def test_cpp_mip_levels_match_python(tmp_path):
+    """C++ の resize_canvas が Python と同じ段数・寸法を作ること。"""
+    cpp = _cpp()
+    dst = str(tmp_path / "resized.clip")
+    w = cpp.ClipWriter()
+    w.load(_sample("emptyimage.clip"))
+    w.resize_canvas(300, 400)
+    w.save(dst)
+    del w
+
+    levels = cb.mip_levels(300, 400)
+    c = ClipFile(dst)
+    cur = c.db.cursor()
+    for mm, base, count in cur.execute("SELECT MainId, BaseMipmapInfo, MipmapCount"
+                                       " FROM Mipmap"):
+        got, node = [], base
+        while node:
+            off = cur.execute("SELECT Offscreen FROM MipmapInfo WHERE MainId=?",
+                              (node,)).fetchone()[0]
+            attr = bytes(cur.execute("SELECT Attribute FROM Offscreen WHERE MainId=?",
+                                     (off,)).fetchone()[0])
+            wid, hei, _c, _r = cb.attribute_dims(attr)
+            got.append((wid, hei))
+            node = cur.execute("SELECT NextIndex FROM MipmapInfo WHERE MainId=?",
+                               (node,)).fetchone()[0]
+        # サムネイル連鎖は 512x512 固定なので、キャンバス連鎖だけ見る
+        if got[0] == (300, 400):
+            assert got == levels, mm
+            assert count == len(levels)
+    c.close()

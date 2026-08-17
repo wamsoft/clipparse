@@ -49,7 +49,8 @@ CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](../psdparse) と同�
   CSP 5.0.4 実機で確認済み** (docs/WRITE_TEST*.md)
 - 相互変換: CLIP → PSD → CLIP の往復で、サンプル 30 本中 **20 本が合成結果まで
   バイト一致**。残り 10 本の差は調整レイヤ (PSD に出さない既知の制限) で説明が付く
-- C++ 版: 画素が Python 版と**バイト完全一致**。91MB / 141,210 ブロックを 2.6 秒
+- C++ 版: 画素が Python 版と**バイト完全一致**。91MB / 141,210 ブロックを 2.6 秒。
+  **書く側も移植済み**で、C++ と Python の出力はチャンクのバイト列まで一致する
 
 ## C++ ライブラリ
 
@@ -75,6 +76,37 @@ C++ 側にしかない口:
 - `layer_region(i, x, y, w, h)` — **重なる 256x256 タイルだけを展開する**部分読み。
   PSD は行 RLE なので同じことができない
 - `preview_png()` — ファイルに埋まっている完成画 (`CanvasPreview`)
+
+### 書く側 (C++)
+
+`clip::ClipWriter` が `tools/clip_write.py` と同じことをする。
+
+```cpp
+clip::ClipWriter w;
+w.load("in.clip");
+w.addLayer(3, "追加", rgba, 300, 400);   // 既存レイヤを雛形に複製する
+w.save("out.clip");
+```
+
+```powershell
+build\clipparse\Release\clip_cli.exe in.clip --validate
+build\clipparse\Release\clip_cli.exe in.clip --roundtrip out.clip
+build\clipparse\Release\clip_cli.exe in.clip --set 5 --opacity 64 --out out.clip
+build\clipparse\Release\clip_cli.exe in.clip --set-pixels 3 rgba.raw out.clip
+build\clipparse\Release\clip_cli.exe in.clip --add-layer  3 rgba.raw out.clip --name 追加
+```
+
+SQLite は `sqlite3_deserialize(RESIZEABLE)` で**書けるメモリ DB** にして、
+`sqlite3_serialize` で取り出す。一時ファイルを作らない。無変更往復は
+60 MB のファイルでも **sha256 一致** (0.14 秒)。
+
+**C++ と Python が書いたファイルは `CHNKExta` のペイロードがバイト一致する**
+(zlib の出力まで同じ)。これが書く側の正しさの担保で、
+`tests/test_write.py` が自動で確かめている。
+
+`clip::validate` / `clip_cli --validate` が参照整合性を検査する。
+**CSP で開く前に必ず通すこと** — ここに引っかかる種類の間違いは、
+寛容なリーダでは読めてしまうのに CSP では落ちたり全面透明になったりする。
 
 ## psdparse 互換で読む
 

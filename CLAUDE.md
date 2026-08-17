@@ -26,8 +26,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 build\clipparse\Release\clip_cli.exe samples\test000.clip --check
 
-# 書き込み経路 (無変更往復はバイト一致するのが正)
+# 書き込み経路 (無変更往復はバイト一致するのが正)。C++ / Python の両方にある
 python tools/clip_write.py roundtrip samples/opacity.clip out.clip
+build\clipparse\Release\clip_cli.exe samples\opacity.clip --roundtrip out.clip
+
+# 参照整合性の検査。**CSP で開く前に必ず通す** (どちらでも同じ判定)
+python tools/clip_validate.py out.clip
+build\clipparse\Release\clip_cli.exe out.clip --validate
 
 # 回帰テスト
 python tools/clip_lazy_demo.py samples/test000.clip --compare samples/test000.png
@@ -85,6 +90,10 @@ python tools/clip_probe.py path/to/file.clip --blocks    # ブロックサブレ
   唯一の正しさの担保。`clip_cli --merged out.raw` / `--dump-offscreen ID out.raw` を
   `clip_lazy_demo` の出力と突き合わせる。拡張をビルドしてあれば
   `pytest tests` の `test_backends_agree` が同じことを自動でやる。
+- **書く側も同じ**。C++ と Python が書いた `.clip` は
+  **CHNKExta のペイロードがバイト一致する**のが正 (zlib の出力まで同じ)。
+  `tests/test_write.py::test_cpp_and_python_write_the_same_chunks` が見ている。
+  外部 ID は乱数なので、比較はペイロードの集合で行うこと。
 - **C++ の丸めは偶数丸め (`nearbyint`)**。numpy の `np.round` に合わせてある。
   `floor(x+0.5)` にすると参照実装と 1 ずれる画素が出る。
 - 合成の式は `clipcomposite.cpp` と `clip_lazy_demo.py` の**両方**にある。
