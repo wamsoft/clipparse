@@ -8,6 +8,7 @@
 #include <pybind11/stl.h>
 
 #include "clipfile.h"
+#include "clipwrite.h"
 
 namespace py = pybind11;
 
@@ -23,6 +24,18 @@ namespace {
       out[i + 3] = char(img.rgba[i + 3]);   // A
     }
     return py::bytes(out);
+  }
+
+  std::vector<uint8_t> bgraToRgba(const uint8_t *src, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> out;
+    out.resize(size_t(w) * h * 4);
+    for (size_t i = 0; i < out.size(); i += 4) {
+      out[i + 0] = src[i + 2];
+      out[i + 1] = src[i + 1];
+      out[i + 2] = src[i + 0];
+      out[i + 3] = src[i + 3];
+    }
+    return out;
   }
 
   clip::ImageMode parseMode(const std::string &m) {
@@ -224,4 +237,124 @@ PYBIND11_MODULE(clipparse, m) {
         },
         "Walk every block and assert the structural invariants. "
         "Returns (ok, report).");
+
+  // ---- 書く側 -------------------------------------------------------------
+  //
+  // tools/clip_write.py と同じことを C++ でやる。画素は **BGRA** で受ける
+  // (読む側が BGRA を返すのに合わせてある)。
+
+  py::class_<clip::ClipWriter>(m, "ClipWriter",
+      "Writer for .clip files. Mirrors tools/clip_write.py.\n"
+      "Rules CLIP STUDIO enforces but a tolerant reader cannot see:\n"
+      " * Offscreen.BlockData is a BLOB, ExternalChunk.ExternalID is TEXT\n"
+      " * BlockCheckSum must be 0 (a wrong non-zero value is rejected)\n"
+      " * Mipmap.MipmapCount must equal the number of levels, or CSP crashes")
+    .def(py::init<>())
+    .def("load",
+        [](clip::ClipWriter &self, const std::string &path) {
+          if (!self.load(path.c_str()))
+            throw std::runtime_error("load failed: " + self.error());
+          return true;
+        },
+        py::arg("path"))
+    .def("save",
+        [](clip::ClipWriter &self, const std::string &path) {
+          const int64_t n = self.save(path.c_str());
+          if (!n) throw std::runtime_error("save failed: " + self.error());
+          return n;
+        },
+        py::arg("path"),
+        "Recompute every chunk offset, update ExternalChunk, serialize the "
+        "database and write the file. Returns the byte count.")
+    .def("set_layer_attr",
+        [](clip::ClipWriter &self, int64_t mainId, py::object name,
+           int64_t opacity, int64_t visible, int64_t composite, int64_t clipping,
+           int64_t folder) {
+          clip::ClipWriter::LayerAttr a;
+          std::string keep;
+          if (!name.is_none()) { keep = name.cast<std::string>(); a.name = keep.c_str(); }
+          a.opacity = opacity; a.visibility = visible; a.composite = composite;
+          a.clipping = clipping; a.folder = folder;
+          if (!self.setLayerAttr(mainId, a))
+            throw std::runtime_error(self.error());
+          return true;
+        },
+        py::arg("main_id"), py::arg("name") = py::none(),
+        py::arg("opacity") = -1, py::arg("visible") = -1,
+        py::arg("composite") = -1, py::arg("clipping") = -1,
+        py::arg("folder") = -1,
+        "Layer attributes (opacity is 0..256, **not 255**).")
+    .def("set_pixels",
+        [](clip::ClipWriter &self, int64_t mainId, py::buffer bgra,
+           uint32_t w, uint32_t h) {
+          py::buffer_info info = bgra.request();
+          if (size_t(info.size) * size_t(info.itemsize) != size_t(w) * h * 4)
+            throw py::value_error("pixel buffer size mismatch");
+          std::vector<uint8_t> rgba = bgraToRgba((const uint8_t *)info.ptr, w, h);
+          if (!self.setPixels(mainId, rgba.data(), w, h))
+            throw std::runtime_error(self.error());
+          return true;
+        },
+        py::arg("main_id"), py::arg("bgra"), py::arg("width"), py::arg("height"),
+        "Replace the 100% mipmap of a layer. Also drops the stale thumbnail.")
+    .def("add_layer",
+        [](clip::ClipWriter &self, int64_t copyFrom, const std::string &name,
+           py::object bgra, uint32_t w, uint32_t h, int64_t after, int64_t parent) {
+          std::vector<uint8_t> rgba;
+          if (!bgra.is_none()) {
+            py::buffer_info info = bgra.cast<py::buffer>().request();
+            if (size_t(info.size) * size_t(info.itemsize) != size_t(w) * h * 4)
+              throw py::value_error("pixel buffer size mismatch");
+            rgba = bgraToRgba((const uint8_t *)info.ptr, w, h);
+          }
+          const int64_t id = self.addLayer(copyFrom, name,
+                                           rgba.empty() ? nullptr : rgba.data(),
+                                           w, h, after, parent);
+          if (!id) throw std::runtime_error(self.error());
+          return id;
+        },
+        py::arg("copy_from"), py::arg("name"), py::arg("bgra") = py::none(),
+        py::arg("width") = 0, py::arg("height") = 0,
+        py::arg("after") = -1, py::arg("parent") = 0,
+        "Clone an existing layer as the template and add a new one. "
+        "Returns the new Layer.MainId.")
+    .def("delete_layer",
+        [](clip::ClipWriter &self, int64_t mainId) {
+          if (!self.deleteLayer(mainId)) throw std::runtime_error(self.error());
+          return true;
+        },
+        py::arg("main_id"))
+    .def("set_canvas_preview",
+        [](clip::ClipWriter &self, py::buffer bgra, uint32_t w, uint32_t h) {
+          py::buffer_info info = bgra.request();
+          if (size_t(info.size) * size_t(info.itemsize) != size_t(w) * h * 4)
+            throw py::value_error("pixel buffer size mismatch");
+          std::vector<uint8_t> rgba = bgraToRgba((const uint8_t *)info.ptr, w, h);
+          if (!self.setCanvasPreview(rgba.data(), w, h))
+            throw std::runtime_error(self.error());
+          return true;
+        },
+        py::arg("bgra"), py::arg("width"), py::arg("height"),
+        "CLIP STUDIO shows this image the moment the file opens, so a stale "
+        "one makes the canvas look wrong until a layer is touched.")
+    .def("resize_canvas",
+        [](clip::ClipWriter &self, uint32_t w, uint32_t h, double dpi) {
+          if (!self.resizeCanvas(w, h, dpi)) throw std::runtime_error(self.error());
+          return true;
+        },
+        py::arg("width"), py::arg("height"), py::arg("dpi") = 0.0,
+        "Rebuild the canvas at a new size (mipmap chains grow or shrink). "
+        "All block data is dropped; the caller must put it back.")
+    .def("set_external_id_seed", &clip::ClipWriter::setExternalIdSeed,
+        py::arg("seed"), "Fix the random seed for new external ids (tests).");
+
+  m.def("validate",
+      [](const std::string &path) {
+        std::vector<std::string> problems;
+        clip::validate(path.c_str(), problems);
+        return problems;
+      },
+      py::arg("path"),
+      "Check referential integrity and return the list of problems (empty is "
+      "good). Run this before opening a written file in CLIP STUDIO.");
 }
