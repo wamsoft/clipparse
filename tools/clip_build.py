@@ -168,5 +168,41 @@ def _retarget_chain(cur, canvas_id, mipmap_id, levels):
         cur.execute("UPDATE Offscreen SET Attribute=?, CanvasId=?, LayerId=?"
                     " WHERE MainId=?",
                     (retarget_attribute(attr, w, h), canvas_id, layer_id, offs))
-    cur.execute("UPDATE Mipmap SET BaseMipmapInfo=?, CanvasId=?, LayerId=?"
-                " WHERE MainId=?", (chain[0][0], canvas_id, layer_id, mipmap_id))
+    # **`MipmapCount` を必ず段数に合わせる**。ここを放置すると、CSP は
+    # その数だけ連鎖を辿ろうとして**存在しない段まで進み、読み込み中に落ちる**
+    # [実測: 段数を減らしたファイルだけ CSP が落ちた]。
+    # こちらのリーダは NextIndex=0 で止まるので気付けない。
+    cur.execute("UPDATE Mipmap SET BaseMipmapInfo=?, MipmapCount=?, CanvasId=?,"
+                " LayerId=? WHERE MainId=?",
+                (chain[0][0], len(chain), canvas_id, layer_id, mipmap_id))
+
+
+def set_canvas_preview(db, rgba):
+    """`CanvasPreview` を差し替える。
+
+    キャンバス全体の PNG (RGBA) を持つ 1 行のテーブル [実測: 全サンプルで 1 行]。
+    **CSP は開いた直後にここを表示する**ので、雛形のものを残すと
+    「起動直後だけ違う絵 (雛形の白いキャンバス) が出る」ことになる
+    [実測: WRITE_TEST_4 ④]。レイヤを操作すると再合成されて正しくなる。
+
+    `rgba` は `(h, w, 4)` の uint8。
+    """
+    import io
+
+    from PIL import Image
+
+    h, w = rgba.shape[:2]
+    buf = io.BytesIO()
+    Image.fromarray(rgba, "RGBA").save(buf, "PNG")
+    cur = db.cursor()
+    row = cur.execute("SELECT MainId FROM CanvasPreview").fetchone()
+    canvas_id = cur.execute("SELECT MainId FROM Canvas").fetchone()[0]
+    if row:
+        cur.execute("UPDATE CanvasPreview SET ImageType=1, ImageWidth=?,"
+                    " ImageHeight=?, ImageData=? WHERE MainId=?",
+                    (w, h, buf.getvalue(), row[0]))
+    else:
+        cur.execute("INSERT INTO CanvasPreview (MainId, CanvasId, ImageType,"
+                    " ImageWidth, ImageHeight, ImageData) VALUES (1, ?, 1, ?, ?, ?)",
+                    (canvas_id, w, h, buf.getvalue()))
+    db.commit()

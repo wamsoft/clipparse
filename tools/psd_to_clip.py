@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import psdparse                                            # noqa: E402
 from clip_build import resize_canvas                       # noqa: E402
-from clip_write import ClipFile, add_layer, delete_layer    # noqa: E402
+from clip_write import (ClipFile, add_layer, delete_layer,  # noqa: E402
+                        refresh_preview)
 
 DEFAULT_TEMPLATE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -171,8 +172,15 @@ def convert(src, dst, template=DEFAULT_TEMPLATE, paper=False, checksum="zero",
         delete_layer(clip, paper_layer)
     delete_layer(clip, template_layer)
 
+
     size = clip.save(dst)
     clip.close()
+
+    # CSP は開いた直後 `CanvasPreview` を表示する。雛形のものを残すと
+    # 「起動直後だけ雛形の白いキャンバスが出る」ことになる [実測: WRITE_TEST_4 ④]。
+    # **PSD の merged image は当てにしない** (Photoshop 以外が作った PSD では
+    # 空のことがある)。書いた `.clip` を自前で合成し直すのが確実。
+    size = refresh_preview(dst)
     log.append(f"  {dst}  {size:,} B  ({n} レイヤ, 用紙={'あり' if paper else 'なし'})")
     if verbose:
         print("\n".join(log))

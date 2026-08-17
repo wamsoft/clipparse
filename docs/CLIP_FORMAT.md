@@ -120,7 +120,7 @@ u8[data_size] payload
 | `LayerThumbnail` | レイヤサムネイル |
 | `ExternalChunk` | **external_id → バイナリ領域内オフセット** |
 | `ExternalTableAndColumnName` | external_id を保持する (table, column) の一覧 |
-| `CanvasPreview` | キャンバス全体のプレビュー画像 |
+| `CanvasPreview` | キャンバス全体のプレビュー画像 (**開いた直後に表示される**、下記) |
 | `AnimationCutBank`, `CanvasItem(Bank)`, `RemovedExternal` | アニメ/素材/削除済み管理 |
 | `ParamScheme`, `ElemScheme` | CSP の UI 用スキーマ定義 (描画には無関係。1179 行など巨大) |
 | `sqlite_sequence` | SQLite 内部 |
@@ -129,6 +129,19 @@ u8[data_size] payload
 `Track`, `TimeLine`, `LayerComp`, `CameraInfo`, `Canvas3DModelBank`,
 `RulerPerspective`, `SmallObjectInfo`, `TimeLapseBlob` などが出現する
 (clip-tools `sqlite_records.py` に型付きビューあり)。
+
+### 2.0.1 `CanvasPreview` [実測]
+
+```
+CanvasPreview(MainId, CanvasId, ImageType=1, ImageWidth, ImageHeight, ImageData)
+```
+
+`ImageData` は**キャンバス全体の PNG (RGBA)**。全サンプルで 1 行だけ持つ。
+
+**CSP は開いた直後この画像を表示する** [実測: WRITE_TEST_4 ④]。書き換えた
+ファイルでここを古いまま残すと、**開いた直後だけ違う絵が出て、レイヤを
+操作すると正しくなる**という挙動になる。書く側は合成し直して差し替えること
+(`clip_build.set_canvas_preview` / `clip_write.refresh_preview`)。
 
 ### 2.1 external_id の解決 [実測]
 
@@ -284,14 +297,19 @@ MipmapInfo 69 ThisScale=100.0 Offscreen=132 Next=382   ← マスク用 (同じ 
 サムネイルの Offscreen は**キャンバス寸法によらず 512x512 (2x2) 固定** [実測]。
 書く側 (`tools/clip_build.py`) はこの規則でミップ連鎖を組み立てる。
 
-**サムネイルの再生成は「実体が無いとき」だけ** [実測: CSP 5.0.4]:
+**`Mipmap.MipmapCount` は必ず連鎖の段数と一致させること** [実測: CSP 5.0.4]。
+段数を減らしたのに `MipmapCount` を放置したファイルは、**CSP が読み込み中に
+落ちる** (存在しない段まで辿ろうとする)。`NextIndex = 0` で止まる実装からは
+見えないので、書く側は必ず更新する。
 
-- 実体 (`CHNKExta`) を**消す**と、CSP は開いた時に作り直す
-- 実体が**古いまま残っている**と、CSP はそれを信用して**作り直さない**
-  (描き込んだ領域だけが更新される)
+**サムネイルの作り直し**:
 
-したがって**画素を書き換えたらサムネイルの実体を落とす**必要がある
-(`clip_write.drop_thumbnail`)。自前で 512x512 を作るより確実。
+- 実体 (`CHNKExta`) を**消す**と、CSP は開いた時に作り直す [実測: WRITE_TEST ③]
+- ただし実体を消すだけでは足りず、**`LayerThumbnail` の `Thumbnail*NeedRefresh`
+  を更新しないと古い絵が残る** [実測: WRITE_TEST_4 ②]。この列は 0/1 のフラグ
+  ではなく**世代番号**らしく、実測値は 0〜380 万まで散らばる。CSP が新しく
+  足したレイヤでは **50**、既存レイヤでは 5 だった
+  [実測: `samples/addlayer_csp.clip`]。書く側は 50 を入れている
 
 Offscreen の役割は 3 種類ある [実測]。サムネイルは「`MipmapInfo` に載っていないもの」
 ではなく `LayerThumbnail` 経由で引くこと。

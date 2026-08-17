@@ -97,5 +97,12 @@ python tools/clip_probe.py path/to/file.clip --blocks    # ブロックサブレ
   1 行もマッチせず黙って失敗する。
 - `BlockCheckSum` は **0 を書く**。算法は未特定だが、非ゼロだと CSP が照合して
   「レイヤ画像が破損しています」になる。0 は「検査値なし」扱いで通る。
-- **画素を書き換えたらサムネイルの実体 (`CHNKExta`) を落とす**。CSP は
-  実体が無ければ作り直すが、古いまま残っていると作り直さない。
+- **画素を書き換えたらサムネイルの実体 (`CHNKExta`) を落とし、
+  `LayerThumbnail.Thumbnail*NeedRefresh` に 50 を入れる**。実体を消すだけでは
+  古いサムネイルが残る (この列は世代番号で、CSP は新規レイヤに 50 を書く)。
+- **`Mipmap.MipmapCount` は必ず連鎖の段数と一致させる**。食い違うと
+  **CSP が読み込み中に落ちる**。`NextIndex=0` で止まる実装からは見えない。
+- **書き換えたら `CanvasPreview` も合成し直す**。CSP は開いた直後ここを表示するので、
+  古いままだと「最初だけ違う絵が出る」。
+- 書いたファイルは `python tools/clip_validate.py OUT.clip` で参照整合性を見る。
+  CSP で開く前にここを通すこと。

@@ -205,3 +205,48 @@ def test_psd_to_clip_keeps_csp_storage_classes(tmp_path):
         r = subprocess.run(cmd, capture_output=True)
         assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
     assert _typeof(clip) == (["blob"], ["text"])
+
+
+# --- 参照整合性 -------------------------------------------------------------
+
+def test_real_files_pass_validation():
+    import clip_validate
+    for name in ("opacity.clip", "folder.clip", "blend2.clip", "test000.clip",
+                 "addlayer_csp.clip"):
+        assert clip_validate.validate(_sample(name), verbose=False) == [], name
+
+
+def test_written_files_pass_validation(tmp_path):
+    import clip_validate
+    dst = str(tmp_path / "out.clip")
+    c = ClipFile(_sample("opacity.clip"))
+    add_layer(c, 3, "検査テスト", np.zeros((400, 300, 4), np.uint8))
+    c.save(dst)
+    c.close()
+    assert clip_validate.validate(dst, verbose=False) == []
+
+
+def test_resize_keeps_mipmap_count_in_sync(tmp_path):
+    """**`Mipmap.MipmapCount` が段数と食い違うと CSP が読み込み中に落ちる**
+    [実測: 段数を減らしたファイルだけ落ちた]。こちらのリーダは NextIndex=0 で
+    止まるので気付けない。
+    """
+    dst = str(tmp_path / "resized.clip")
+    c = ClipFile(_sample("emptyimage.clip"))          # 1600x1200 = 5 段
+    levels = cb.resize_canvas(c.db, 300, 400)         # 3 段へ縮める
+    assert len(levels) == 3
+    c.externals = []
+    c.save(dst)
+    c.close()
+
+    c = ClipFile(dst)
+    cur = c.db.cursor()
+    for mm, base, count in cur.execute(
+            "SELECT MainId, BaseMipmapInfo, MipmapCount FROM Mipmap"):
+        n, node = 0, base
+        while node:
+            node = cur.execute("SELECT NextIndex FROM MipmapInfo WHERE MainId=?",
+                               (node,)).fetchone()[0]
+            n += 1
+        assert count == n == 3, mm
+    c.close()

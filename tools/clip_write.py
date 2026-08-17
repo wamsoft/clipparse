@@ -230,7 +230,48 @@ def drop_thumbnail(c, layer_id):
     key = as_str(bd[0])
     before = len(c.externals)
     c.externals = [(e, p) for e, p in c.externals if as_str(e) != key]
+
+    # `LayerThumbnail.Thumbnail*NeedRefresh` は 0/1 のフラグではなく**世代番号**
+    # らしい (実測値は 0〜380 万まで散らばる)。CSP が新しく足したレイヤでは
+    # **50**、既存のレイヤでは 5 が入っていた [実測: samples/addlayer_csp.clip]。
+    # 実体を落とすだけでは古いサムネイルが残るので、CSP が新規レイヤに書く値を
+    # そのまま真似る。
+    cols = [d[1] for d in cur.execute("PRAGMA table_info(LayerThumbnail)")
+            if "NeedRefresh" in d[1]]
+    cur.execute("UPDATE LayerThumbnail SET %s WHERE MainId=?"
+                % ", ".join(f"[{x}]=50" for x in cols), (row[0],))
+    c.db.commit()
     return before - len(c.externals)
+
+
+def refresh_preview(path):
+    """保存済みのファイルを開き直し、合成結果を `CanvasPreview` に書く。
+
+    **CSP は開いた直後 `CanvasPreview` を表示する** [実測: WRITE_TEST_4 ④]。
+    古いままだと「起動直後だけ違う絵が出る」ことになる。
+    合成器を持っているので自前で作り直せる。
+    """
+    import gc
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import numpy as np
+    import imgdoc
+    from clip_build import set_canvas_preview
+
+    d = imgdoc.open(path)
+    w, h = d.header.width, d.header.height
+    rgba = np.frombuffer(d.merged_image(), np.uint8).reshape(h, w, 4)[..., [2, 1, 0, 3]]
+    rgba = rgba.copy()
+    # C++ バックエンドはファイルを mmap したまま持つので、**手放してから**
+    # 同じパスへ書く (Windows では開いたままだと PermissionError になる)
+    del d
+    gc.collect()
+
+    c = ClipFile(path)                      # 中身は __init__ で読み切るので上書き可
+    set_canvas_preview(c.db, rgba)
+    n = c.save(path)
+    c.close()
+    return n
 
 
 def cmd_setpixels(args):
@@ -290,6 +331,8 @@ def cmd_setpixels(args):
 
     n = c.save(args.dst)
     c.close()
+    if not args.no_preview:
+        n = refresh_preview(args.dst)
     nonempty = sum(1 for s in sizes if s != enc.EMPTY_RECORD_SIZE)
     if dropped:
         print("    サムネイルの実体を落とした (CSP が開いた時に作り直す)")
@@ -419,9 +462,12 @@ def add_layer(c, copy_from, name, rgba=None, after=None, parent=None,
     _copy_row(cur, "Offscreen", "MainId", old_tn_off,
               {"MainId": new_tn_off, "LayerId": new_layer, "CanvasId": canvas_id,
                "BlockData": _new_external_id()})
-    _copy_row(cur, "LayerThumbnail", "MainId", src_row[2],
-              {"MainId": new_thumb, "LayerId": new_layer, "CanvasId": canvas_id,
-               "ThumbnailOffscreen": new_tn_off})
+    tn_over = {"MainId": new_thumb, "LayerId": new_layer, "CanvasId": canvas_id,
+               "ThumbnailOffscreen": new_tn_off}
+    # CSP が新規レイヤに書く世代番号 [実測: samples/addlayer_csp.clip]
+    tn_over.update({d[1]: 50 for d in cur.execute("PRAGMA table_info(LayerThumbnail)")
+                    if "NeedRefresh" in d[1]})
+    _copy_row(cur, "LayerThumbnail", "MainId", src_row[2], tn_over)
 
     # --- Layer 行 ---
     row = {
@@ -431,6 +477,7 @@ def add_layer(c, copy_from, name, rgba=None, after=None, parent=None,
         "LayerRenderMipmap": new_mipmap, "LayerRenderThumbnail": new_thumb,
         "LayerLayerMaskMipmap": 0, "LayerLayerMaskThumbnail": 0,
         "LayerSelect": 0, "LayerVisibility": 1,
+        "LightTableInfo": None,          # CSP の新規レイヤは NULL [実測]
     }
     row.update(overrides or {})
     _copy_row(cur, "Layer", "MainId", copy_from, row)
@@ -519,6 +566,21 @@ def delete_layer(c, layer_id):
     cur.execute("UPDATE Layer SET LayerFirstChildIndex=? WHERE LayerFirstChildIndex=?",
                 (nxt, layer_id))
     cur.execute("DELETE FROM Layer WHERE MainId=?", (layer_id,))
+
+    # **`Canvas.CanvasCurrentLayer` が消えたレイヤを指したままにしない**。
+    # 生き残っているレイヤ (ルートの最上段) へ付け替える。
+    row = cur.execute("SELECT MainId, CanvasRootFolder, CanvasCurrentLayer"
+                      " FROM Canvas").fetchone()
+    if row and row[2] == layer_id:
+        node = cur.execute("SELECT LayerFirstChildIndex FROM Layer WHERE MainId=?",
+                           (row[1],)).fetchone()[0]
+        top = node
+        while node:
+            top = node
+            node = cur.execute("SELECT LayerNextIndex FROM Layer WHERE MainId=?",
+                               (node,)).fetchone()[0]
+        cur.execute("UPDATE Canvas SET CanvasCurrentLayer=? WHERE MainId=?",
+                    (top or row[1], row[0]))
     c.db.commit()
 
     c.externals = [(e, p) for e, p in c.externals if as_str(e) not in ext]
@@ -559,6 +621,8 @@ def cmd_addlayer(args):
                           after=args.after, checksum=args.checksum)
     n = c.save(args.dst)
     c.close()
+    if not args.no_preview:
+        n = refresh_preview(args.dst)
     print(f"  雛形 #{args.copy_from} {src_name[0]!r} -> 新レイヤ #{new_layer} {args.name!r}")
     print(f"  {args.dst}  {n:,} B")
     return 0
@@ -644,6 +708,10 @@ def main():
             p.add_argument("--checksum", default="zero",
                            choices=("zero", "crc32", "none"),
                            help="BlockCheckSum の書き方 (算法が未解読なので選べる)")
+        if name in ("setpixels", "addlayer"):
+            p.add_argument("--no-preview", action="store_true",
+                           dest="no_preview",
+                           help="CanvasPreview を作り直さない (合成を省く)")
         if name == "addlayer":
             p.add_argument("--copy-from", type=int, required=True,
                            dest="copy_from", help="雛形にする Layer.MainId")

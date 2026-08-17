@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) 実装完了。CSP 1 巡目の指摘を反映し再確認待ち**
+最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) 実装完了。CSP 2 巡目の指摘を反映し再確認待ち**
 
 ---
 
@@ -336,7 +336,36 @@ W2 の画素差し替えは絵・半透明・透明・ブロック境界すべ�
 > `tests/test_write.py` に格納型の回帰テストを入れた。
 > 新しいテーブルへ行を足すときは、**必ず実ファイルの `typeof()` を確かめる**こと。
 
-### ⑪ 残っているもの
+### ⑪ CSP 実機確認 2 巡目の結果 (2026-08-17)
+
+[WRITE_TEST_4.md](WRITE_TEST_4.md) の報告 + ユーザーが CSP で作った
+`samples/addlayer_csp.clip` (**CSP が足したレイヤの正解**) との列単位の
+突き合わせで、残り 3 件の原因が確定。再確認は [WRITE_TEST_5.md](WRITE_TEST_5.md)。
+
+| 症状 | 原因 |
+|---|---|
+| w9 / w10 が**読み込み中に落ちる** | **`Mipmap.MipmapCount` を段数に合わせていなかった**。CSP はその数だけ連鎖を辿って存在しない段まで進む。雛形と同じ 5 段になる w8 だけ無事だったのが決め手 |
+| サムネイルが古いまま | 実体を消すだけでは足りない。**`LayerThumbnail.Thumbnail*NeedRefresh` (14 列) は世代番号**で、CSP は新規レイヤに **50**、既存に 5 を書く |
+| 開いた直後だけ白い | **`CanvasPreview`** (キャンバス全体の PNG) を CSP は開いた直後に表示する。雛形のものが残っていた |
+| (自前で発見) | `Canvas.CanvasCurrentLayer` が削除したレイヤを指したままだった |
+
+**通ったもの**: W3 のレイヤ追加は画素・サムネイル・描き込み・保存・削除まで全部 OK。
+W4 も雛形と同じ段数になるファイル (w8/w11) は開けて絵も正しい。
+
+> **`tools/clip_validate.py` を新設**。CSP で開く前に参照整合性を機械的に検査する
+> (ミップ段数 / 閉路 / 孤児行 / 格納型 / 消えたレイヤへの参照)。
+> 実ファイル 33 本と生成物 8 本で通る。**書いたら必ず通すこと。**
+
+#### 書く側の作法 (CSP 実機で確定した分)
+
+1. `Offscreen.BlockData` は **BLOB**、`ExternalChunk.ExternalID` は **TEXT**
+2. `BlockCheckSum` は **0** (非ゼロは照合されて「破損」になる)
+3. `Mipmap.MipmapCount` は**必ず段数と一致**させる (違うと落ちる)
+4. サムネイルは**実体を消し**、`Thumbnail*NeedRefresh` に **50**
+5. `CanvasPreview` を**合成し直す**
+6. `Canvas.CanvasCurrentLayer` を**生きたレイヤ**に向ける
+
+### ⑫ 残っているもの
 
 - **`BlockCheckSum` の扱い**。CSP が検査していなければ `zero` 固定で確定
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
@@ -364,7 +393,8 @@ docs/SAMPLE_REQUESTS_3.md    CSP サンプル依頼 第 3 弾 (完了)
 docs/WRITE_TEST.md           書き込み経路の CSP 確認手順 (往復/属性/削除 — 確認済み)
 docs/WRITE_TEST_2.md         同 その 2 (画素差し替え/レイヤ追加 — 確認待ち)
 docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 1 巡目完了)
-docs/WRITE_TEST_4.md         同 その 4 (指摘の修正後の再確認 — 依頼中)
+docs/WRITE_TEST_4.md         同 その 4 (2 巡目 — 完了)
+docs/WRITE_TEST_5.md         同 その 5 (3 巡目 — 依頼中)
 docs/STATUS.md               このファイル
 clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
@@ -374,11 +404,12 @@ tools/clip_write.py          書き出し (往復 / 属性編集 / 画素差し�
 tools/clip_encode.py         ピクセルブロックを書く側 (decode_block の逆写像)
 tools/clip_build.py          キャンバスの寸法ごと作り替える (W4 の土台)
 tools/psd_to_clip.py         PSD -> CLIP 変換
+tools/clip_validate.py       参照整合性の検査 (CSP で開く前に通す)
 tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
 tests/test_imgdoc.py         共通面のテスト 16 件
-tests/test_write.py          書き込み経路のテスト 15 件 (格納型の回帰込み)
+tests/test_write.py          書き込み経路のテスト 18 件 (段数・格納型・整合性の回帰込み)
 python/clipparse_module.cpp  pybind11 バインディング
 samples/                     gitignore 済み。実ファイル置き場
 ```
