@@ -312,8 +312,9 @@ def _new_external_id():
     return "extrnlid" + uuid.uuid4().hex.upper()
 
 
-def cmd_addlayer(args):
-    """既存レイヤを雛形にして新しいレイヤを足す (W3)。
+def add_layer(c, copy_from, name, rgba=None, after=None, parent=None,
+              checksum="zero", overrides=None):
+    """既存レイヤを雛形にして新しいレイヤを足す (W3 の中身)。
 
     `Layer` は 57 列、`LayerThumbnail` は 43 列あり、CSP が期待する既定値の
     大半は意味が分かっていない。**列挙せず既存行を丸ごと複製**して、
@@ -322,32 +323,28 @@ def cmd_addlayer(args):
     ミップの縮小段とサムネイルには画素を入れない。実測で CSP は
     100% 段とサムネイルにしか画素を書かず、しかもサムネイルは開いた時に
     再生成してくれることを確認済み (docs/WRITE_TEST.md)。
+
+    `rgba` は 100% ミップと同じ寸法の `(h, w, 4)` uint8 配列 (None で透明)。
+    `parent` 省略時はルートフォルダ直下、`after` 省略時はその最上段へ。
+    戻り値は新しい `Layer.MainId`。
     """
+    import uuid
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import numpy as np
-    from PIL import Image
     import clip_encode as enc
 
-    c = ClipFile(args.src)
     cur = c.db.cursor()
-
     src_row = cur.execute(
         "SELECT LayerName, LayerRenderMipmap, LayerRenderThumbnail,"
         " LayerLayerMaskMipmap, LayerFolder FROM Layer WHERE MainId=?",
-        (args.copy_from,)).fetchone()
+        (copy_from,)).fetchone()
     if src_row is None:
-        print(f"  雛形レイヤ #{args.copy_from} が無い")
-        c.close()
-        return 1
-    if src_row[4] & 1:
-        print("  フォルダは雛形にできない")
-        c.close()
-        return 1
+        raise ValueError(f"雛形レイヤ #{copy_from} が無い")
 
     canvas_id, root = cur.execute(
         "SELECT MainId, CanvasRootFolder FROM Canvas").fetchone()
+    parent = root if parent is None else parent
 
-    # --- ID を払い出す ---
     new_layer = _next_id(cur, "Layer")
     new_mipmap = _next_id(cur, "Mipmap")
     new_thumb = _next_id(cur, "LayerThumbnail")
@@ -366,10 +363,9 @@ def cmd_addlayer(args):
     new_infos = [_next_id(cur, "MipmapInfo") for _ in chain]
     new_offs = [_next_id(cur, "Offscreen") for _ in chain]
     for i, (old_info, scale, old_off) in enumerate(chain):
-        ext_id = _new_external_id()
         _copy_row(cur, "Offscreen", "MainId", old_off,
                   {"MainId": new_offs[i], "LayerId": new_layer,
-                   "CanvasId": canvas_id, "BlockData": ext_id})
+                   "CanvasId": canvas_id, "BlockData": _new_external_id()})
         _copy_row(cur, "MipmapInfo", "MainId", old_info,
                   {"MainId": new_infos[i], "LayerId": new_layer,
                    "CanvasId": canvas_id, "Offscreen": new_offs[i],
@@ -390,25 +386,26 @@ def cmd_addlayer(args):
                "ThumbnailOffscreen": new_tn_off})
 
     # --- Layer 行 ---
-    import uuid
-    _copy_row(cur, "Layer", "MainId", args.copy_from, {
+    row = {
         "MainId": new_layer, "CanvasId": canvas_id,
-        "LayerName": args.name, "LayerUuid": str(uuid.uuid4()),
+        "LayerName": name, "LayerUuid": str(uuid.uuid4()),
         "LayerFirstChildIndex": 0, "LayerNextIndex": 0,
         "LayerRenderMipmap": new_mipmap, "LayerRenderThumbnail": new_thumb,
         "LayerLayerMaskMipmap": 0, "LayerLayerMaskThumbnail": 0,
         "LayerSelect": 0, "LayerVisibility": 1,
-    })
+    }
+    row.update(overrides or {})
+    _copy_row(cur, "Layer", "MainId", copy_from, row)
 
-    # --- 兄弟チェーンへ繋ぐ (--after の直上。既定は最上段) ---
+    # --- 兄弟チェーンへ繋ぐ (after の直上。既定は最上段) ---
     kids = []
     node = cur.execute("SELECT LayerFirstChildIndex FROM Layer WHERE MainId=?",
-                       (root,)).fetchone()[0]
+                       (parent,)).fetchone()[0]
     while node:
         kids.append(node)
         node = cur.execute("SELECT LayerNextIndex FROM Layer WHERE MainId=?",
                            (node,)).fetchone()[0]
-    after = args.after if args.after is not None else (kids[-1] if kids else 0)
+    after = after if after is not None else (kids[-1] if kids else 0)
     if after:
         nxt = cur.execute("SELECT LayerNextIndex FROM Layer WHERE MainId=?",
                           (after,)).fetchone()[0]
@@ -418,36 +415,115 @@ def cmd_addlayer(args):
                     (nxt, new_layer))
     else:
         cur.execute("UPDATE Layer SET LayerFirstChildIndex=? WHERE MainId=?",
-                    (new_layer, root))
+                    (new_layer, parent))
 
     # --- 100% ミップの画素 ---
     attr, bdid = cur.execute(
         "SELECT Attribute, BlockData FROM Offscreen WHERE MainId=?",
         (new_offs[0],)).fetchone()
     a = enc.parse_attr(bytes(attr))
-    if args.png:
-        img = Image.open(args.png).convert("RGBA")
-        if img.size != (a["width"], a["height"]):
-            img = img.resize((a["width"], a["height"]), Image.LANCZOS)
-        rgba = np.array(img)
-    else:
+    if rgba is None:
         rgba = np.zeros((a["height"], a["width"], 4), np.uint8)
-    payload, sizes = enc.build_chunk_payload(rgba, a, args.checksum)
+    if rgba.shape[:2] != (a["height"], a["width"]):
+        raise ValueError(f"画素の寸法が 100% ミップと違う: "
+                         f"{rgba.shape[:2]} != {(a['height'], a['width'])}")
+    payload, sizes = enc.build_chunk_payload(rgba, a, checksum)
     cur.execute("UPDATE Offscreen SET Attribute=? WHERE MainId=?",
                 (enc.patch_block_sizes(bytes(attr), sizes), new_offs[0]))
     c.db.commit()
     c.externals.append((as_str(bdid).encode("ascii"), payload))
+    return new_layer
 
+
+def delete_layer(c, layer_id):
+    """レイヤ 1 枚を消す。ミップ連鎖・サムネイル・兄弟リンクまで面倒を見る。
+
+    `Offscreen.BlockData` が指す `CHNKExta` も落とす。オフセットは
+    `save()` が全部計算し直すので、ここでは実体を消すだけでよい。
+    """
+    cur = c.db.cursor()
+    row = cur.execute("SELECT LayerRenderMipmap, LayerRenderThumbnail"
+                      " FROM Layer WHERE MainId=?", (layer_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"レイヤ #{layer_id} が無い")
+
+    dead = set()
+    node = cur.execute("SELECT BaseMipmapInfo FROM Mipmap WHERE MainId=?",
+                       (row[0],)).fetchone()[0]
+    while node:
+        info, offs, nxt = cur.execute(
+            "SELECT MainId, Offscreen, NextIndex FROM MipmapInfo WHERE MainId=?",
+            (node,)).fetchone()
+        dead.add(offs)
+        cur.execute("DELETE FROM MipmapInfo WHERE MainId=?", (info,))
+        node = nxt
+    cur.execute("DELETE FROM Mipmap WHERE MainId=?", (row[0],))
+    if row[1]:
+        tn = cur.execute("SELECT ThumbnailOffscreen FROM LayerThumbnail"
+                         " WHERE MainId=?", (row[1],)).fetchone()
+        if tn:
+            dead.add(tn[0])
+        cur.execute("DELETE FROM LayerThumbnail WHERE MainId=?", (row[1],))
+
+    ext = set()
+    for off in dead:
+        bd = cur.execute("SELECT BlockData FROM Offscreen WHERE MainId=?",
+                         (off,)).fetchone()
+        if bd and bd[0]:
+            ext.add(as_str(bd[0]))
+        cur.execute("DELETE FROM Offscreen WHERE MainId=?", (off,))
+
+    # 兄弟チェーンから外す
+    nxt = cur.execute("SELECT LayerNextIndex FROM Layer WHERE MainId=?",
+                      (layer_id,)).fetchone()[0]
+    cur.execute("UPDATE Layer SET LayerNextIndex=? WHERE LayerNextIndex=?",
+                (nxt, layer_id))
+    cur.execute("UPDATE Layer SET LayerFirstChildIndex=? WHERE LayerFirstChildIndex=?",
+                (nxt, layer_id))
+    cur.execute("DELETE FROM Layer WHERE MainId=?", (layer_id,))
+    c.db.commit()
+
+    c.externals = [(e, p) for e, p in c.externals if as_str(e) not in ext]
+    return len(ext)
+
+
+def cmd_addlayer(args):
+    """`add_layer` の CLI 面 (W3)。"""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import numpy as np
+    from PIL import Image
+    import clip_encode as enc
+
+    c = ClipFile(args.src)
+    cur = c.db.cursor()
+    src_name = cur.execute("SELECT LayerName FROM Layer WHERE MainId=?",
+                           (args.copy_from,)).fetchone()
+    if src_name is None:
+        print(f"  雛形レイヤ #{args.copy_from} が無い")
+        c.close()
+        return 1
+
+    rgba = None
+    if args.png:
+        mip = cur.execute(
+            "SELECT o.Attribute FROM Layer l"
+            " JOIN Mipmap m ON m.MainId = l.LayerRenderMipmap"
+            " JOIN MipmapInfo i ON i.MainId = m.BaseMipmapInfo"
+            " JOIN Offscreen o ON o.MainId = i.Offscreen"
+            " WHERE l.MainId=?", (args.copy_from,)).fetchone()
+        a = enc.parse_attr(bytes(mip[0]))
+        img = Image.open(args.png).convert("RGBA")
+        if img.size != (a["width"], a["height"]):
+            img = img.resize((a["width"], a["height"]), Image.LANCZOS)
+        rgba = np.array(img)
+
+    new_layer = add_layer(c, args.copy_from, args.name, rgba,
+                          after=args.after, checksum=args.checksum)
     n = c.save(args.dst)
     c.close()
-    print(f"  雛形 #{args.copy_from} {src_row[0]!r} -> 新レイヤ #{new_layer} {args.name!r}")
-    print(f"    ミップ {len(chain)} 段 (Offscreen {new_offs[0]}..{new_offs[-1]}) "
-          f"+ サムネイル #{new_tn_off}")
-    print(f"    100% 段に {sum(1 for s in sizes if s != enc.EMPTY_RECORD_SIZE)}"
-          f"/{len(sizes)} ブロック  チャンク {len(payload):,} B")
+    print(f"  雛形 #{args.copy_from} {src_name[0]!r} -> 新レイヤ #{new_layer} {args.name!r}")
     print(f"  {args.dst}  {n:,} B")
     return 0
-
 
 def cmd_opacity(args):
     """レイヤ不透明度だけ変更する (SQLite の UPDATE のみ。オフセットは動かない)。"""
