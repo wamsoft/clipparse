@@ -14,7 +14,7 @@ CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](../psdparse) と同�
 | [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md) | CLIP ファイル形式の仕様。実ファイルで検証済みの部分と、[clip-tools](https://github.com/animeops/clip-tools) 由来の推定部分を区別して記述 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 遅延参照方式の実現性検討、psdparse との共通 API 案、変換処理の見通し、実装ロードマップ |
 | [docs/STATUS.md](docs/STATUS.md) | **まずここ。** 到達点・再開手順・次にやること |
-| [docs/WRITE_TEST.md](docs/WRITE_TEST.md) | 書き込み経路の CSP 実機確認 (完了済み) |
+| [docs/WRITE_TEST.md](docs/WRITE_TEST.md) 〜 [_5.md](docs/WRITE_TEST_5.md) | 書き込み経路の CSP 実機確認 (全 5 巡・**全項目 OK**) |
 | [docs/CLIP_TOOLS_REPORT.md](docs/CLIP_TOOLS_REPORT.md) | clip-tools へのフィードバック用 (英語)。再現手順付きのバグ 3 件 + 仕様の訂正 |
 
 ## 調査結果の要点
@@ -32,6 +32,11 @@ CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](../psdparse) と同�
 5. レイヤは **描画用とマスク用の 2 本のミップ連鎖**を持ち、どちらも同じ `LayerId`・
    同じ `ThisScale=100.0` で始まる。`Layer.LayerRenderMipmap` → `Mipmap.BaseMipmapInfo`
    から辿らないとマスクをレイヤ画像として読んでしまう。
+6. **書く側には「読めてしまうが CSP が受け付けない」落とし穴がある** — 同じ ID なのに
+   テーブルごとに BLOB / TEXT と格納型が違う、`Mipmap.MipmapCount` が段数と食い違うと
+   CSP が落ちる、など。実機で 5 巡かけて洗い出した結果を
+   [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md) に記録し、
+   `tools/clip_validate.py` で機械的に検査できるようにしてある。
 
 ## 検証状況
 
@@ -40,7 +45,10 @@ CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](../psdparse) と同�
   合成モード 27 種・表現色 4 種・マスク・クリッピング・通過フォルダ・
   調整レイヤ 5 種を実測同定して実装 (詳細は CLIP_FORMAT.md §9/§10)
 - 書き込み: 無変更往復が **sha256 一致** (60MB ファイルでも)。
-  属性編集・チャンク再配置したファイルを **CSP が問題なく開くことを実機確認済み**
+  **属性編集・画素の差し替え・レイヤ追加・PSD からの新規作成のすべてを
+  CSP 5.0.4 実機で確認済み** (docs/WRITE_TEST*.md)
+- 相互変換: CLIP → PSD → CLIP の往復で、サンプル 30 本中 **20 本が合成結果まで
+  バイト一致**。残り 10 本の差は調整レイヤ (PSD に出さない既知の制限) で説明が付く
 - C++ 版: 画素が Python 版と**バイト完全一致**。91MB / 141,210 ブロックを 2.6 秒
 
 ## C++ ライブラリ
@@ -107,13 +115,24 @@ python tools/clip_lazy_demo.py file.clip -o out.png --compare reference.png
 ```
 
 ```
-# CLIP -> PSD 変換 (psdparse の Python バインディングが要る)
+# CLIP <-> PSD 変換 (psdparse の Python バインディングが要る)
 python tools/clip_to_psd.py input.clip output.psd --verify
+python tools/psd_to_clip.py input.psd  output.clip --verify
 
 # 書き出し (無変更往復はバイト一致するのが正)
 python tools/clip_write.py roundtrip in.clip out.clip
-python tools/clip_write.py opacity   in.clip out.clip --layer 5 --value 64
+python tools/clip_write.py set       in.clip out.clip --layer 5 --opacity 64 --composite 2
+python tools/clip_write.py setpixels in.clip out.clip --layer 3 --png patch.png
+python tools/clip_write.py addlayer  in.clip out.clip --copy-from 3 --name 追加 --png patch.png
+
+# 参照整合性の検査。**CSP で開く前に必ず通す**
+python tools/clip_validate.py out.clip
 ```
+
+> 書く側には「こちらのリーダでは読めるのに CSP が受け付けない」落とし穴が
+> いくつもある (格納型・`MipmapCount`・チェックサム・サムネイルの世代番号・
+> `CanvasPreview`)。CSP 実機で 5 巡かけて洗い出し、
+> `clip_validate.py` で機械的に検査できるようにしてある。
 
 `clip_probe.py` は標準ライブラリのみ。`clip_lazy_demo.py` は numpy (比較時のみ Pillow)。
 

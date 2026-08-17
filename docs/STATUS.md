@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) 実装完了。CSP 2 巡目の指摘を反映し再確認待ち**
+最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) が CSP 実機で全項目 OK。読み書き両方が実用段階**
 
 ---
 
@@ -365,9 +365,33 @@ W4 も雛形と同じ段数になるファイル (w8/w11) は開けて絵も正�
 5. `CanvasPreview` を**合成し直す**
 6. `Canvas.CanvasCurrentLayer` を**生きたレイヤ**に向ける
 
-### ⑫ 残っているもの
+### ⑫ CSP 実機確認 3 巡目 — **全項目 OK** (2026-08-17)
 
-- **`BlockCheckSum` の扱い**。CSP が検査していなければ `zero` 固定で確定
+[WRITE_TEST_5.md](WRITE_TEST_5.md) の全チェックが通った。**書き込み経路は
+CSP 5.0.4 で実用段階**:
+
+| | CSP で確認済み |
+|---|---|
+| W1 属性編集 | 名前 / 不透明度 / 合成モード |
+| W2 画素の差し替え | 絵・半透明・透明・ブロック境界・サムネイル |
+| W3 レイヤ追加 | 絵・サムネイル・描き込み・上書き保存・削除 |
+| W4 PSD → CLIP | フォルダ・合成モード・寸法の作り替え・起動直後の表示・上書き保存 |
+
+**書く側の作法 (CSP 実機で確定)**。どれも**自前のリーダでは検出できない**
+種類の間違いなので、`tools/clip_validate.py` に検査を入れてある:
+
+1. `Offscreen.BlockData` は **BLOB**、`ExternalChunk.ExternalID` は **TEXT**
+   — 取り違えるとそのレイヤが全面透明になる
+2. `BlockCheckSum` は **0** — 非ゼロは照合されて「破損しています」になる
+3. `Mipmap.MipmapCount` は**必ず段数と一致** — 違うと読み込み中に落ちる
+4. サムネイルは**実体を消し**、`Thumbnail*NeedRefresh` に **50**
+5. `CanvasPreview` を**合成し直す** — 開いた直後に表示される
+6. `Canvas.CanvasCurrentLayer` を**生きたレイヤ**に向ける
+
+**書いたら必ず `python tools/clip_validate.py OUT.clip` を通すこと。**
+
+### ⑬ 残っているもの
+
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
 - **PSD → CLIP でマスク・テキスト・調整レイヤを「編集可能なまま」持ち込む**
@@ -394,7 +418,7 @@ docs/WRITE_TEST.md           書き込み経路の CSP 確認手順 (往復/属�
 docs/WRITE_TEST_2.md         同 その 2 (画素差し替え/レイヤ追加 — 確認待ち)
 docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 1 巡目完了)
 docs/WRITE_TEST_4.md         同 その 4 (2 巡目 — 完了)
-docs/WRITE_TEST_5.md         同 その 5 (3 巡目 — 依頼中)
+docs/WRITE_TEST_5.md         同 その 5 (3 巡目 — 全項目 OK)
 docs/STATUS.md               このファイル
 clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
