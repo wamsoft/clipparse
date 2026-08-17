@@ -127,6 +127,44 @@ CLIP → PSD → CLIP の往復で **13 サンプルすべて合成結果がバ�
 PSD → CLIP が **45.6 秒** (同 1 分 22 秒)。
 詳細と制限は [examples/clipconv/README.md](examples/clipconv/README.md)。
 
+## Python から使う
+
+```powershell
+pip install .          # PyPI 公開後は pip install clipparse
+```
+
+```python
+import clipparse
+
+f = clipparse.ClipFile()
+f.load("file.clip")
+print(f.width, f.height, [l.name for l in f.layers])
+f.merged_image()                      # 全レイヤを合成した BGRA バイト列
+f.layer_region(1, 100, 120, 64, 48)   # 重なるタイルだけ展開する部分読み
+
+w = clipparse.ClipWriter()            # 書く側
+w.load("file.clip")
+w.add_layer(3, "追加", bgra, 300, 400)
+w.save("out.clip")
+clipparse.validate("out.clip")        # 問題のリスト (空なら OK)
+```
+
+**依存パッケージは無い。** ホイールに入るのは C++ 拡張だけで、zlib と sqlite3 は
+ビルド時にソースから取り込まれる (実行時の共有ライブラリを要求しない)。
+
+> `tools/imgdoc.py` (psdparse 互換面) は**パッケージに同梱していない**。
+> あれは psdparse を必要とするので、同梱すると依存ゼロでなくなるため。
+> 使うときはリポジトリから持ってきて `psdparse` を入れること。
+
+ビルドだけしたい場合は CMake から直接叩ける:
+
+```powershell
+cmake -S . -B build-py -DCLIPPARSE_BUILD_PYTHON=ON `
+      -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+cmake --build build-py --config Release
+$env:PYTHONPATH="D:\test\clipparse\build-py\python\Release"
+```
+
 ## psdparse 互換で読む
 
 `tools/imgdoc.py` が psdparse 互換の読み取り面を `.clip` に被せる。

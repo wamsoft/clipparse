@@ -1,0 +1,60 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "clipparse"
+version = "0.1.0"
+description = "Fast CLIP STUDIO PAINT (.clip) reader/writer — C++17 core with pybind11 bindings"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "wamsoft", email = "wtnbgo@gmail.com" }]
+keywords = ["clip", "clip studio paint", "csp", "parser", "image", "graphics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Graphics :: Graphics Conversion",
+]
+
+# 依存は無い。ホイールに入るのは **C++ 拡張モジュールだけ**で、
+# psdparse 互換面 (`tools/imgdoc.py`) は同梱しない — あれは psdparse を
+# 必要とするので、同梱すると依存ゼロでなくなる。リポジトリ側のツールのまま。
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/wamsoft/clipparse"
+Repository = "https://github.com/wamsoft/clipparse"
+Issues = "https://github.com/wamsoft/clipparse/issues"
+
+[tool.scikit-build]
+# CMake 駆動で pybind11 拡張をビルドする。vcpkg 等は不要:
+# zlib はシステムにあればそれ、無ければソース取得。sqlite3 は常にソース取得
+# (clipparse/CMakeLists.txt)。
+cmake.version = ">=3.16"
+cmake.args = ["-DCLIPPARSE_BUILD_PYTHON=ON", "-DCLIPPARSE_BUILD_CLI=OFF"]
+# ホイールの中身は install() したもの (= 拡張モジュール) だけ。
+# 自動探索を切らないと、**C++ ソースの `clipparse/` ディレクトリが
+# Python パッケージと誤認される**。
+wheel.packages = []
+build-dir = "build/skbuild/{wheel_tag}"
+
+[tool.scikit-build.sdist]
+exclude = [
+    "samples/",          # 再配布不可の実ファイル置き場
+    "*.clip",
+    "*.psd",
+    "*.raw",
+    "build/",
+    "build-*/",
+    ".pytest_cache/",
+    ".github/",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]

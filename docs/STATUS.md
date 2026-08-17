@@ -454,7 +454,28 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 > トーンカーブ / カラーバランスなど)。CLIP→PSD が調整レイヤを落とす既知の制限で、
 > Python 版も同じ。レイヤの画素とツリーは保たれる。
 
-### ⑮ 残っているもの
+### ⑮ Python パッケージ化 — 完了 (未公開)
+
+`pyproject.toml` (scikit-build-core)。`pip install .` / `pip wheel .` /
+`python -m build --sdist` が通る。psdparse と同じ流儀。
+
+| | |
+|---|---|
+| 名前 | `clipparse` — **PyPI は空いている** (2026-08-17 時点で 404) |
+| 版 | 0.1.0 |
+| ライセンス | MIT (`LICENSE`。psdparse と同文) |
+| 依存 | **無し**。ホイールの中身は C++ 拡張 1 つだけ (750 KB) |
+| sdist | 175 KB。`samples/` と `*.clip` は除外される |
+
+**`tools/imgdoc.py` は同梱しない**方針にした。あれは psdparse を要求するので、
+入れると依存ゼロでなくなる。psdparse 互換面が要る人はリポジトリから取る。
+
+クリーンな venv にホイールを入れて、読み・合成・書き・検査まで動作確認済み。
+
+> **まだ PyPI へ上げていない。** 公開するなら `python -m build` して
+> `twine upload`。GitHub の URL (`wamsoft/clipparse`) も先に用意が要る。
+
+### ⑯ 残っているもの
 
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
 - **クリッピングの縁 168 画素**
@@ -491,6 +512,8 @@ clipparse/                   C++17 本体
   clipvalidate                 参照整合性の検査
   clip_cli                     読み書き両方の CLI
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
+pyproject.toml               Python パッケージ設定 (scikit-build-core, 依存なし)
+LICENSE                      MIT
 tools/clip_probe.py          構造ダンプ (標準ライブラリのみ)
 tools/clip_lazy_demo.py      遅延参照プロトタイプ + 回帰テスト (仕様の基準)
 tools/clip_write.py          書き出し (往復 / 属性編集 / 画素差し替え / レイヤ追加)
