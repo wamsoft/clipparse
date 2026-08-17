@@ -453,7 +453,7 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 > トーンカーブ / カラーバランスなど)。CLIP→PSD が調整レイヤを落とす既知の制限で、
 > Python 版も同じ。レイヤの画素とツリーは保たれる。
 
-### ⑮ Python パッケージ化 — 完了 (未公開)
+### ⑮ Python パッケージ化と公開 — 完了 (PyPI 公開済み)
 
 `pyproject.toml` (scikit-build-core)。`pip install .` / `pip wheel .` /
 `python -m build --sdist` が通る。psdparse と同じ流儀。
@@ -471,8 +471,32 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 
 クリーンな venv にホイールを入れて、読み・合成・書き・検査まで動作確認済み。
 
-> **まだ PyPI へ上げていない。** 公開するなら `python -m build` して
-> `twine upload`。GitHub の URL (`wamsoft/clipparse`) も先に用意が要る。
+**公開済み** (2026-08-17):
+
+| | |
+|---|---|
+| PyPI | https://pypi.org/project/clipparse/ — 0.1.0、**36 ホイール + sdist** |
+| GitHub | https://github.com/wamsoft/clipparse (public、`wamsoft` org) |
+| CI | `.github/workflows/wheels.yml` (cibuildwheel)。psdparse から移植 |
+| 対応 | Python 3.9〜3.14 (free-threaded 含む) × Linux / Windows / macOS (x86_64 + arm64) |
+
+公開の手順 (次回のため):
+
+1. PyPI と TestPyPI の**アカウント設定**で「pending publisher」を登録する
+   (プロジェクトがまだ無いので、プロジェクト設定側からは登録できない)。
+   Owner `wamsoft` / Repository `clipparse` / Workflow **`wheels.yml`** /
+   Environment `pypi` (TestPyPI は `testpypi`)
+2. GitHub の Settings → Environments に `pypi` / `testpypi` を作る
+3. `Actions → wheels → Run workflow` で TestPyPI へ予行演習
+4. `git tag -a vX.Y.Z && git push origin vX.Y.Z` で本番公開
+
+> **pending publisher は名前を予約しない。** 最初の publish が通るまでは
+> 他人に名前を取られうるので、登録したら間を空けずに公開まで進めること。
+
+> **CI を回して初めて出た不具合**: `clipbase.h` が `memcpy` を使うのに
+> `<cstring>` を include していなかった。MSVC と Apple clang は間接的に
+> 入るので Windows / macOS では通り、**manylinux の GCC だけで落ちた**。
+> 3 プラットフォームでビルドする価値はここにある。
 
 ### ⑯ 残っているもの
 

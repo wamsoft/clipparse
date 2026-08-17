@@ -130,8 +130,12 @@ PSD → CLIP が **45.6 秒** (同 1 分 22 秒)。
 ## Python から使う
 
 ```powershell
-pip install .          # PyPI 公開後は pip install clipparse
+pip install clipparse
 ```
+
+Python 3.9〜3.14 (free-threaded 含む) の Linux / Windows / macOS 向けホイールを
+[PyPI](https://pypi.org/project/clipparse/) に置いてある。ソースから入れる場合は
+リポジトリのルートで `pip install .`。
 
 ```python
 import clipparse
