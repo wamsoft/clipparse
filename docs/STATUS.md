@@ -1,6 +1,6 @@
 # 作業状況と再開手順
 
-最終更新: 2026-08-17 / フェーズ **P0 完了 → 書き込み (W1〜W4) 実装完了・CSP 確認待ち**
+最終更新: 2026-08-17 / フェーズ **書き込み (W1〜W4) 実装完了。CSP 1 巡目の指摘を反映し再確認待ち**
 
 ---
 
@@ -317,7 +317,26 @@ python tools/psd_to_clip.py in.psd out.clip --paper      # 用紙レイヤを残
    厳密には 1 対 1 にならない。`clip_to_psd` の切り捨てに対して
    **切り上げ**を返すと `c=1` 以外は元に戻る
 
-### ⑩ 残っているもの
+### ⑩ CSP 実機確認 1 巡目の結果 (2026-08-17)
+
+[WRITE_TEST_2.md](WRITE_TEST_2.md) / [WRITE_TEST_3.md](WRITE_TEST_3.md) の報告から
+**3 件の原因が確定**した。修正済み。再確認は [WRITE_TEST_4.md](WRITE_TEST_4.md)。
+
+| 症状 | 原因 |
+|---|---|
+| 追加したレイヤが**全面透明** / PSD→CLIP のレイヤが空 / CSP が落ちる | **`Offscreen.BlockData` は BLOB、`ExternalChunk.ExternalID` は TEXT**。同じ ID なのに格納型が逆。新規行に str を入れていて CSP が実体を解決できなかった |
+| `_crc32` だけ「レイヤ画像またはレイヤーマスクが破損しています」 | **CSP は非ゼロの `BlockCheckSum` を実際に照合している**。0 は「検査値なし」扱いで通る → **算法を解かずに 0 固定で実用になる** |
+| 差し替えたレイヤのサムネイルが古いまま | **実体が残っていると CSP は作り直さない** (無ければ作り直す)。書き換えたら実体を落とす (`drop_thumbnail`) |
+
+**通ったもの**: W1 の属性編集 (名前 / 不透明度 / 合成モード) は全項目 OK。
+W2 の画素差し替えは絵・半透明・透明・ブロック境界すべて OK。
+空レイヤの追加 (W7) も OK で、描いて保存して開き直せる。
+
+> 教訓: **自前のリーダは SQLite の型に寛容なので、格納型の間違いを検出できない**。
+> `tests/test_write.py` に格納型の回帰テストを入れた。
+> 新しいテーブルへ行を足すときは、**必ず実ファイルの `typeof()` を確かめる**こと。
+
+### ⑪ 残っているもの
 
 - **`BlockCheckSum` の扱い**。CSP が検査していなければ `zero` 固定で確定
 - **彩度 (合成モード 24) の残差 8**、**色相・彩度・明度の彩度/明度の式**
@@ -344,7 +363,8 @@ docs/SAMPLE_REQUESTS_2.md    CSP サンプル依頼 第 2 弾 (完了)
 docs/SAMPLE_REQUESTS_3.md    CSP サンプル依頼 第 3 弾 (完了)
 docs/WRITE_TEST.md           書き込み経路の CSP 確認手順 (往復/属性/削除 — 確認済み)
 docs/WRITE_TEST_2.md         同 その 2 (画素差し替え/レイヤ追加 — 確認待ち)
-docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 確認待ち)
+docs/WRITE_TEST_3.md         同 その 3 (PSD -> CLIP 変換 — 1 巡目完了)
+docs/WRITE_TEST_4.md         同 その 4 (指摘の修正後の再確認 — 依頼中)
 docs/STATUS.md               このファイル
 clipparse/                   C++17 本体 (clipbase.h / clipfile / clipcomposite / clip_cli)
 CMakeLists.txt               zlib + sqlite3 を FetchContent で取得
@@ -358,7 +378,7 @@ tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
 tests/test_imgdoc.py         共通面のテスト 16 件
-tests/test_write.py          書き込み経路のテスト 12 件
+tests/test_write.py          書き込み経路のテスト 15 件 (格納型の回帰込み)
 python/clipparse_module.cpp  pybind11 バインディング
 samples/                     gitignore 済み。実ファイル置き場
 ```

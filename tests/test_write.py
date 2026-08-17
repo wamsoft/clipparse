@@ -163,3 +163,45 @@ def test_psd_to_clip_opacity_is_reversible():
         p = c * 255 // 256                     # clip_to_psd と同じ切り捨て
         back = min(256, -(-p * 256 // 255))    # psd_to_clip と同じ切り上げ
         assert back == c or c == 1
+
+
+# --- 格納型 (CSP が実体を見つけられるか) ------------------------------------
+
+def _typeof(path):
+    c = ClipFile(path)
+    cur = c.db.cursor()
+    a = cur.execute("SELECT DISTINCT typeof(BlockData) FROM Offscreen").fetchall()
+    b = cur.execute("SELECT DISTINCT typeof(ExternalID) FROM ExternalChunk").fetchall()
+    c.close()
+    return sorted(x[0] for x in a), sorted(x[0] for x in b)
+
+
+def test_samples_use_blob_blockdata_and_text_externalid():
+    """CSP が書く格納型 [実測: 33 ファイル 7,000 行超で例外なし]。"""
+    for name in ("opacity.clip", "blend2.clip", "text.clip", "test000.clip"):
+        assert _typeof(_sample(name)) == (["blob"], ["text"]), name
+
+
+def test_added_layer_keeps_csp_storage_classes(tmp_path):
+    """**同じ 40 文字の ID なのに格納型が逆**。取り違えると CSP は実体を
+    見つけられず、そのレイヤを全面透明として開く (こちらのリーダは気付けない)。
+    """
+    dst = str(tmp_path / "added.clip")
+    c = ClipFile(_sample("opacity.clip"))
+    add_layer(c, 3, "格納型テスト", np.zeros((400, 300, 4), np.uint8))
+    c.save(dst)
+    c.close()
+    assert _typeof(dst) == (["blob"], ["text"])
+
+
+def test_psd_to_clip_keeps_csp_storage_classes(tmp_path):
+    pytest.importorskip("psdparse")
+    psd = str(tmp_path / "mid.psd")
+    clip = str(tmp_path / "out.clip")
+    for cmd in ([sys.executable, os.path.join(ROOT, "tools", "clip_to_psd.py"),
+                 _sample("folder.clip"), psd],
+                [sys.executable, os.path.join(ROOT, "tools", "psd_to_clip.py"),
+                 psd, clip]):
+        r = subprocess.run(cmd, capture_output=True)
+        assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+    assert _typeof(clip) == (["blob"], ["text"])

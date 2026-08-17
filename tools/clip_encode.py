@@ -4,11 +4,15 @@
 
     from clip_encode import build_chunk_payload, patch_block_sizes
 
-**未解決**: `BlockCheckSum` の算法。実測では画素ありブロックは必ず非ゼロ、
-空ブロックは必ずゼロで、17,185 / 148,874 件がその通りだった。CRC32 / Adler32 /
-Fletcher32 / FNV-1a / CRC32C / 各種 sum を展開後・圧縮後・レコード全体に対して
-試したがどれも合わない。CSP 独自のハッシュと見ている。
-そのため書き方を 3 通り選べるようにしてあり、CSP 実機で切り分ける。
+**`BlockCheckSum` は 0 を書けばよい** [実測: CSP 5.0.4]。算法は未特定のままだが、
+CSP に 3 通り開かせて分かったこと:
+
+    0            → 正常に開く
+    CRC32 (別物) → 「レイヤ画像またはレイヤーマスクが破損しています」
+    欄ごと省略   → 正常に開く
+
+つまり **CSP は非ゼロの検査値を実際に照合していて、0 は「検査値なし」扱い**。
+`--checksum crc32` は切り分け用に残してあるが**使ってはいけない**。
 
 依存: numpy。
 """
@@ -105,6 +109,7 @@ def build_chunk_payload(rgba, attr, checksum="zero"):
         else:
             raw = encode_rgba_block(tile, bw, bh)
             rec = build_block_record(bi, raw, bw, bh)
+            # 既定は 0 = 「検査値なし」。crc32 は算法違いなので CSP に拒否される
             checksums.append(0 if checksum == "zero"
                              else zlib.crc32(raw) & 0xFFFFFFFF)
         statuses.append(1)

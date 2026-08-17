@@ -207,6 +207,32 @@ def cmd_set(args):
     return 0
 
 
+def drop_thumbnail(c, layer_id):
+    """レイヤのサムネイルの**実体だけ**落とす。行と Attribute はそのまま。
+
+    **CSP は古いサムネイルを開き直しても作り直さない** [実測: WRITE_TEST_2 ②]。
+    画素を書き換えたら実体を消しておく必要がある。実体が無ければ
+    CSP が開いた時に作り直すことは確認済み [実測: WRITE_TEST ③]。
+    """
+    cur = c.db.cursor()
+    row = cur.execute("SELECT LayerRenderThumbnail FROM Layer WHERE MainId=?",
+                      (layer_id,)).fetchone()
+    if row is None or not row[0]:
+        return 0
+    off = cur.execute("SELECT ThumbnailOffscreen FROM LayerThumbnail WHERE MainId=?",
+                      (row[0],)).fetchone()
+    if off is None:
+        return 0
+    bd = cur.execute("SELECT BlockData FROM Offscreen WHERE MainId=?",
+                     (off[0],)).fetchone()
+    if bd is None or bd[0] is None:
+        return 0
+    key = as_str(bd[0])
+    before = len(c.externals)
+    c.externals = [(e, p) for e, p in c.externals if as_str(e) != key]
+    return before - len(c.externals)
+
+
 def cmd_setpixels(args):
     """レイヤの 100% ミップの画素を差し替える (W2)。
 
@@ -260,9 +286,13 @@ def cmd_setpixels(args):
     else:
         c.externals.append((key.encode("ascii"), payload))
 
+    dropped = drop_thumbnail(c, args.layer)
+
     n = c.save(args.dst)
     c.close()
     nonempty = sum(1 for s in sizes if s != enc.EMPTY_RECORD_SIZE)
+    if dropped:
+        print("    サムネイルの実体を落とした (CSP が開いた時に作り直す)")
     print(f"  レイヤ #{args.layer} {row[0]!r}  offscreen #{offs} "
           f"{a['width']}x{a['height']} ({a['cols']}x{a['rows']} ブロック)")
     print(f"    画素ありブロック {nonempty}/{len(sizes)}   "
@@ -308,8 +338,16 @@ def _copy_row(cur, table, where_col, where_val, overrides):
 
 
 def _new_external_id():
+    """新しい `external_id` を **bytes** で返す。
+
+    **`Offscreen.BlockData` は BLOB、`ExternalChunk.ExternalID` は TEXT**
+    [実測: 33 ファイル 7,000 行超で例外なし]。同じ 40 文字の ID なのに
+    格納型が逆になっている。ここを取り違えると **CSP は実体を見つけられず、
+    そのレイヤを全面透明として開く** (こちらのリーダは型に寛容なので気付けない)。
+    `save()` の `ExternalChunk` 側は str を束縛すること。
+    """
     import uuid
-    return "extrnlid" + uuid.uuid4().hex.upper()
+    return ("extrnlid" + uuid.uuid4().hex.upper()).encode("ascii")
 
 
 def add_layer(c, copy_from, name, rgba=None, after=None, parent=None,

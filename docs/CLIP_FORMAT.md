@@ -213,6 +213,28 @@ MainId=5 name='layer2'  LayerType=1    LayerFolder=0  Next=0
 **オフセットの罠** [clip-tools 実績]: `DrawToRenderOffscreenType` が NULL でない場合、
 `LayerRenderOffscrOffsetX/Y` は既に offscreen へ焼き込み済みなので二重加算してはならない。
 
+### 2.2.1 外部チャンク ID の格納型 [実測: 書く側で最重要]
+
+同じ 40 文字の ID (`extrnlid` + 32 桁の大文字 16 進) が、**テーブルごとに違う
+格納型で入っている** [実測: 33 ファイル・7,000 行超で例外なし]:
+
+| 列 | 宣言 | 実際の `typeof()` |
+|---|---|---|
+| `Offscreen.BlockData` | BLOB | **`blob`** |
+| `ExternalChunk.ExternalID` | BLOB | **`text`** |
+
+**どちらを取り違えても CSP は黙って壊れる**:
+
+- `Offscreen.BlockData` に TEXT を入れると、**CSP は実体を見つけられず
+  そのレイヤを全面透明として開く** (エラーも出ない)
+- `ExternalChunk.ExternalID` に bytes を束縛して `UPDATE` すると
+  **1 行もマッチせず**、オフセットが更新されないままのファイルができる
+
+SQLite は宣言型に関係なく束縛した値の型で格納するので (型親和性)、
+どちらも構文としては通ってしまう。**自前のリーダは両方読めてしまうため、
+実機で開くまで気付けない**。実際 W3 (レイヤ追加) と W4 (PSD→CLIP) は
+これで「レイヤはあるが中身が透明」になっていた。
+
 ### 2.3 Offscreen / Mipmap / MipmapInfo / LayerThumbnail [実測]
 
 ```
@@ -261,6 +283,15 @@ MipmapInfo 69 ThisScale=100.0 Offscreen=132 Next=382   ← マスク用 (同じ 
 
 サムネイルの Offscreen は**キャンバス寸法によらず 512x512 (2x2) 固定** [実測]。
 書く側 (`tools/clip_build.py`) はこの規則でミップ連鎖を組み立てる。
+
+**サムネイルの再生成は「実体が無いとき」だけ** [実測: CSP 5.0.4]:
+
+- 実体 (`CHNKExta`) を**消す**と、CSP は開いた時に作り直す
+- 実体が**古いまま残っている**と、CSP はそれを信用して**作り直さない**
+  (描き込んだ領域だけが更新される)
+
+したがって**画素を書き換えたらサムネイルの実体を落とす**必要がある
+(`clip_write.drop_thumbnail`)。自前で 512x512 を作るより確実。
 
 Offscreen の役割は 3 種類ある [実測]。サムネイルは「`MipmapInfo` に載っていないもの」
 ではなく `LayerThumbnail` 経由で引くこと。
@@ -500,8 +531,20 @@ u32[count] エントリ
 test000 の layer1 では 224 バイト = BlockStatus(110) + BlockCheckSum(114)。
 `BlockStatus` は全ブロック 1 [実測: 全サンプル]。
 
-**`BlockCheckSum` の算法は未特定** [実測: 相関のみ]。値そのものは分からないが、
-**ゼロかどうかは画素の有無と完全に一致する**:
+**`BlockCheckSum` の算法は未特定。ただし 0 なら CSP は検査しない** [実測: CSP 5.0.4]。
+
+同じ画素を 3 通りの書き方で作って CSP に開かせた結果:
+
+| 書いた値 | CSP の反応 |
+|---|---|
+| **0** | **正常に開く**。画素も正しい |
+| CRC32 (算法違い) | **「レイヤ画像またはレイヤーマスクが破損しています」**。開くが画像が壊れる |
+| 欄ごと省略 | 正常に開く |
+
+つまり **CSP は非ゼロの検査値を実際に照合していて、0 は「検査値なし」の扱い**。
+書く側は **0 を書けばよい** (算法を解かなくても実用になる)。
+
+値そのものは相変わらず分からないが、**ゼロかどうかは画素の有無と完全に一致する**:
 
 | | |
 |---|---|
@@ -512,9 +555,8 @@ test000 の layer1 では 224 バイト = BlockStatus(110) + BlockCheckSum(114)�
 CRC32、その 1 の補数、Adler32、Fletcher32、sum32 (BE/LE)、xor32、バイト総和、
 FNV-1a、CRC32C。CSP 独自のハッシュと見ている。
 
-書く側は `--checksum zero|crc32|none` で切り替えられるようにしてあり、
-CSP が読み込み時に検査しているかどうかを実機で切り分ける
-([WRITE_TEST_2.md](WRITE_TEST_2.md))。
+書く側の既定は `zero`。`--checksum crc32|none` も残してあるが、
+**`crc32` は CSP に拒否されるので使ってはいけない** (切り分け用)。
 
 ### 4.3 非ラスタ外部チャンク (binc) [clip-tools 実績]
 

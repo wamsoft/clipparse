@@ -89,5 +89,13 @@ python tools/clip_probe.py path/to/file.clip --blocks    # ブロックサブレ
   `floor(x+0.5)` にすると参照実装と 1 ずれる画素が出る。
 - 合成の式は `clipcomposite.cpp` と `clip_lazy_demo.py` の**両方**にある。
   片方だけ直さないこと。
-- `ExternalChunk.ExternalID` は **BLOB 宣言だが値は TEXT**。bytes を束縛して
-  UPDATE すると 1 行もマッチせず黙って失敗する (`tools/clip_write.py` の教訓)。
+- **外部チャンク ID の格納型はテーブルごとに逆**。同じ 40 文字の ID なのに
+  `Offscreen.BlockData` は **BLOB**、`ExternalChunk.ExternalID` は **TEXT**
+  [実測: 33 ファイルで例外なし]。どちらも取り違えると**自前のリーダでは読めるのに
+  CSP では壊れる**: `BlockData` に TEXT を入れると CSP はそのレイヤを
+  **全面透明**として開き、`ExternalID` に bytes を束縛すると UPDATE が
+  1 行もマッチせず黙って失敗する。
+- `BlockCheckSum` は **0 を書く**。算法は未特定だが、非ゼロだと CSP が照合して
+  「レイヤ画像が破損しています」になる。0 は「検査値なし」扱いで通る。
+- **画素を書き換えたらサムネイルの実体 (`CHNKExta`) を落とす**。CSP は
+  実体が無ければ作り直すが、古いまま残っていると作り直さない。
