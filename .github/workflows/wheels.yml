@@ -1,0 +1,97 @@
+name: wheels
+
+# cibuildwheel でクロスプラットフォームのバイナリホイール + sdist を作る。
+# vcpkg は要らない: zlib はシステムにあればそれ、無ければ CMake がソース取得し、
+# sqlite3 は常に amalgamation をソース取得する (clipparse/CMakeLists.txt)。
+# よってマトリクスに追加の下準備は不要。
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_wheels:
+    name: wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-13 (Intel) ランナーは縮小されキュー待ちが長い。macos-14 (arm64)
+        # 上で x86_64/arm64 を両方クロスビルドするので Intel ランナーは使わない。
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.2.1
+        env:
+          # pybind11 に PyPy は不要。32bit (Linux i686 / Windows win32) と musl も落とす。
+          CIBW_SKIP: "pp* *_i686 *-musllinux_* *-win32"
+          # free-threaded CPython (cp313t / cp314t) も作る。
+          CIBW_ENABLE: "cpython-freethreading"
+          # arm64 ランナー上で Mac の両アーキテクチャを作る (x86_64 はクロスビルド
+          # なので import テストは cibuildwheel が自動で飛ばす)。
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
+          # C++17 には新しめの deployment target が要る。
+          MACOSX_DEPLOYMENT_TARGET: "10.13"
+          # 出来たホイールが import できて API が生えているかだけ見る。
+          CIBW_TEST_COMMAND: >-
+            python -c "import clipparse; assert hasattr(clipparse, 'ClipFile');
+            assert hasattr(clipparse, 'ClipWriter'); print('clipparse import OK')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  make_sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish-testpypi:
+    name: publish to TestPyPI (dry run)
+    needs: [build_wheels, make_sdist]
+    runs-on: ubuntu-latest
+    # 手動トリガのときだけ。本番前の予行演習。
+    if: github.event_name == 'workflow_dispatch'
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish:
+    name: publish to PyPI
+    needs: [build_wheels, make_sdist]
+    runs-on: ubuntu-latest
+    # バージョンタグを push したときだけ。PyPI の Trusted Publishing を使うので
+    # API トークンは要らない (PyPI 側で publisher の登録が必要)。
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

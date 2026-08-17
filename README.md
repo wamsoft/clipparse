@@ -162,7 +162,7 @@ clipparse.validate("out.clip")        # 問題のリスト (空なら OK)
 cmake -S . -B build-py -DCLIPPARSE_BUILD_PYTHON=ON `
       -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 cmake --build build-py --config Release
-$env:PYTHONPATH="D:\test\clipparse\build-py\python\Release"
+$env:PYTHONPATH="$PWD\build-py\python\Release"
 ```
 
 ## psdparse 互換で読む

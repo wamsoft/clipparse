@@ -7,7 +7,6 @@
 ## 再開したらまず動かすもの
 
 ```powershell
-cd D:\test\clipparse
 
 # 回帰: 参照 PNG とのピクセル一致
 python tools/clip_lazy_demo.py samples/test000.clip --compare samples/test000.png
@@ -171,7 +170,7 @@ python tools/clip_to_psd.py samples/blend2.clip out.psd --verify
 
 #### フォルダ対応のために psdparse へ入れた変更
 
-`D:/test/psdparse` を変更した (**未コミット**):
+隣に置いてある `psdparse` を変更した (あちらでコミット済み):
 
 | ファイル | 変更 |
 |---|---|
@@ -232,7 +231,7 @@ PSD は行 RLE なので同じことができない、CLIP 固有の利点。
 cmake -S . -B build-py -DCLIPPARSE_BUILD_PYTHON=ON `
       -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 cmake --build build-py --config Release
-$env:PYTHONPATH="D:	est\clipparseuild-py\python\Release"
+$env:PYTHONPATH="$PWD\build-py\python\Release"
 ```
 
 `tools/imgdoc.py` は拡張があればそちらを使う (`imgdoc.BACKEND`)。
