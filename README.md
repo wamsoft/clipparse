@@ -1,6 +1,6 @@
 # clipparse
 
-CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](../psdparse) と同じ思想
+CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](https://github.com/wamsoft/psdparse) と同じ思想
 — **構造メタ情報だけを保持し、実データは元ファイルから必要になった時に読む** —
 で扱うライブラリ。
 
@@ -176,8 +176,8 @@ $env:PYTHONPATH="$PWD\build-py\python\Release"
 
 ```powershell
 # psdparse 向けのスクリプトを、そのまま .clip に対して走らせる
-python tools/run_on_clip.py D:	est\psdparse	ools\psd_export.py sampleslend2.clip --out-dir out
-python tools/run_on_clip.py D:	est\psdparse\examples\composite.py samples	ext.clip out.png
+python tools/run_on_clip.py D:\test\psdparse\tools\psd_export.py samples\blend2.clip --out-dir out
+python tools/run_on_clip.py D:\test\psdparse\examples\composite.py samples\text.clip out.png
 ```
 
 ```python
@@ -235,4 +235,4 @@ python tools/clip_validate.py out.clip
 
 - [animeops/clip-tools](https://github.com/animeops/clip-tools) — Python 実装。
   形式解析の出発点。特に `clip_tools/clip.md` と `clip_tools/structs/`。
-- [psdparse](../psdparse) — 本ライブラリが倣う設計。`docs/ARCHITECTURE.md` を参照。
+- [psdparse](https://github.com/wamsoft/psdparse) — 本ライブラリが倣う設計。`docs/ARCHITECTURE.md` を参照。
