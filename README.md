@@ -1,118 +1,158 @@
 # clipparse
 
-CLIP STUDIO PAINT の `.clip` ファイルを、[psdparse](https://github.com/wamsoft/psdparse) と同じ思想
-— **構造メタ情報だけを保持し、実データは元ファイルから必要になった時に読む** —
-で扱うライブラリ。
+[日本語版 README](README.ja.md) — Japanese version of this page.
 
-仕様解析は完了。C++ 本体 (`clipparse/`) と Python 検証実装 (`tools/`) が動作中。
-到達点と再開手順は [docs/STATUS.md](docs/STATUS.md) にまとめてある。
+C++17 library for CLIP STUDIO PAINT `.clip` files — **reads, composites, edits and
+writes them** — with pybind11-based Python bindings on PyPI.
 
-## ドキュメント
+- **Lazy I/O.** Parsing touches only the embedded SQLite metadata. Pixels are
+  decompressed per **256x256 block**, on demand, straight out of the mmapped file.
+- **Partial reads.** `layer_region()` expands only the tiles that overlap the
+  rectangle you ask for — something the row-RLE format of PSD cannot do.
+- **Compositing.** All 27 CLIP blend modes, folders (including pass-through),
+  masks, clipping and 5 kinds of adjustment layer, matched pixel-for-pixel against
+  the preview CLIP STUDIO itself stores in the file.
+- **Writing.** An unmodified round-trip is **byte-identical** (sha256, even for a
+  60 MB file). Editing layer attributes, replacing pixels, adding/removing layers
+  and rebuilding a canvas from scratch are all verified in **CLIP STUDIO PAINT PRO
+  5.0.4** on real hardware.
+- **CLIP to PSD and back.** Round-trip conversion via
+  [psdparse](https://github.com/wamsoft/psdparse), in both C++ and Python.
+- **No runtime dependencies.** zlib and sqlite3 are compiled in; the Python wheel
+  is a single extension module.
 
-| | |
-|---|---|
-| [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md) | CLIP ファイル形式の仕様。実ファイルで検証済みの部分と、[clip-tools](https://github.com/animeops/clip-tools) 由来の推定部分を区別して記述 |
-| [docs/DESIGN.md](docs/DESIGN.md) | 遅延参照方式の実現性検討、psdparse との共通 API 案、変換処理の見通し、実装ロードマップ |
-| [docs/STATUS.md](docs/STATUS.md) | **まずここ。** 到達点・再開手順・次にやること |
-| [docs/WRITE_TEST.md](docs/WRITE_TEST.md) 〜 [_5.md](docs/WRITE_TEST_5.md) | 書き込み経路の CSP 実機確認 (全 5 巡・**全項目 OK**) |
-| [docs/CLIP_TOOLS_REPORT.md](docs/CLIP_TOOLS_REPORT.md) | clip-tools へのフィードバック用 (英語)。再現手順付きのバグ 3 件 + 仕様の訂正 |
+The format was reverse-engineered from real files; what was verified by measurement
+and what is still inferred are kept apart in [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md).
 
-## 調査結果の要点
+## Install (Python)
 
-1. `.clip` は `[バイナリ領域][SQLite3 DB]` の 2 部構成。メタ情報は全て SQLite 側にあり、
-   実ピクセルは外部チャンク (`CHNKExta`) として 256x256 ブロック + zlib で入っている。
-2. **SQLite の `ExternalChunk.Offset` と `Offscreen.Attribute.BlockSize[]` の累積和だけで、
-   任意のピクセルブロックの絶対オフセットが確定する。** バイナリ領域の走査は不要。
-   → psdparse 型の遅延読みが素直に成立し、しかも **256x256 ブロック単位**で
-   部分読みできる (PSD より細かい粒度)。
-3. メタ情報は最初から関係データベースなので、「動的なテーブルビュー + 型付きビュー」の
-   2 段構えにできる。CSP のバージョン差で列が増減しても基層は壊れない。
-4. `Offscreen.Attribute` の `BlockSize[i]` は圧縮サイズではなく
-   **サブレコード全体の長さ** (clip-tools の理解を実測で訂正)。空ブロックは常に 104 バイト。
-5. レイヤは **描画用とマスク用の 2 本のミップ連鎖**を持ち、どちらも同じ `LayerId`・
-   同じ `ThisScale=100.0` で始まる。`Layer.LayerRenderMipmap` → `Mipmap.BaseMipmapInfo`
-   から辿らないとマスクをレイヤ画像として読んでしまう。
-6. **書く側には「読めてしまうが CSP が受け付けない」落とし穴がある** — 同じ ID なのに
-   テーブルごとに BLOB / TEXT と格納型が違う、`Mipmap.MipmapCount` が段数と食い違うと
-   CSP が落ちる、など。実機で 5 巡かけて洗い出した結果を
-   [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md) に記録し、
-   `tools/clip_validate.py` で機械的に検査できるようにしてある。
+```bash
+pip install clipparse
+```
 
-## 検証状況
+Wheels are published for Python 3.9-3.14 (free-threaded builds included) on
+Linux / Windows / macOS (x86_64 + arm64). From source — a C++17 compiler and
+CMake 3.16+ is all you need, **no package manager**:
 
-- 構造アサーション: `test000` + 本番 3 ファイル (60〜91 MB) で **164,562 ブロック**成立
-- 合成の再現: **28 サンプル中 13 が CSP 出力とピクセル完全一致、22 が丸め誤差以内**。
-  合成モード 27 種・表現色 4 種・マスク・クリッピング・通過フォルダ・
-  調整レイヤ 5 種を実測同定して実装 (詳細は CLIP_FORMAT.md §9/§10)
-- 書き込み: 無変更往復が **sha256 一致** (60MB ファイルでも)。
-  **属性編集・画素の差し替え・レイヤ追加・PSD からの新規作成のすべてを
-  CSP 5.0.4 実機で確認済み** (docs/WRITE_TEST*.md)
-- 相互変換: CLIP → PSD → CLIP の往復で、サンプル 30 本中 **20 本が合成結果まで
-  バイト一致**。残り 10 本の差は調整レイヤ (PSD に出さない既知の制限) で説明が付く
-- C++ 版: 画素が Python 版と**バイト完全一致**。91MB / 141,210 ブロックを 2.6 秒。
-  **書く側も移植済み**で、C++ と Python の出力はチャンクのバイト列まで一致する
+```bash
+pip install .
+```
 
-## C++ ライブラリ
+## Quick start
+
+```python
+import clipparse
+
+f = clipparse.ClipFile()
+f.load("artwork.clip")
+
+print(f.width, f.height, f.resolution)         # canvas size in pixels, DPI
+for layer in f.layers:                          # flat list, bottom-to-top
+    print(layer.index, layer.name, layer.opacity, layer.is_group)
+
+bgra = f.merged_image()                         # every layer composited, BGRA bytes
+one  = f.layer_image(2)                         # one layer, BGRA bytes
+part = f.layer_region(2, 100, 120, 64, 48)      # only the overlapping tiles
+
+png, w, h = f.preview_png()                     # the preview CLIP STUDIO stored
+```
+
+Pixels always come back as **BGRA bytes with straight (un-premultiplied) alpha**,
+the same convention psdparse uses:
+
+```python
+from PIL import Image
+img = Image.frombytes("RGBA", (f.width, f.height), f.merged_image())
+b, g, r, a = img.split()
+Image.merge("RGBA", (r, g, b, a)).save("merged.png")
+```
+
+Editing. The writer addresses layers by **`Layer.MainId`** (`layer.main_id`), not
+by the list index used for reading:
+
+```python
+w = clipparse.ClipWriter()
+w.load("artwork.clip")
+
+w.set_layer_attr(main_id, name="renamed", opacity=128)   # opacity is 0..256 here
+w.set_pixels(main_id, bgra, f.width, f.height)           # replace a layer's pixels
+new_id = w.add_layer(main_id, "new layer", bgra, f.width, f.height)
+w.delete_layer(other_id)
+
+w.save("out.clip")
+assert clipparse.validate("out.clip") == []              # run before opening in CSP
+```
+
+Full reference: **[docs/PYTHON_API.md](docs/PYTHON_API.md)**
+([日本語](docs/PYTHON_API.ja.md)).
+
+## Command-line tools
+
+The Python bindings cover the library; the scripts under `tools/` are the
+reference implementation and the day-to-day utilities. They live in the
+repository — they are not part of the wheel.
+
+```
+# structure dump — chunk layout, tables, layer tree, block list (stdlib only)
+python tools/clip_probe.py file.clip [--blocks]
+
+# lazy-reference prototype: composite and compare against a reference PNG
+python tools/clip_lazy_demo.py file.clip -o out.png --compare reference.png
+
+# writing (an unmodified round-trip must be byte-identical)
+python tools/clip_write.py roundtrip in.clip out.clip
+python tools/clip_write.py set       in.clip out.clip --layer 5 --opacity 64 --composite 2
+python tools/clip_write.py setpixels in.clip out.clip --layer 3 --png patch.png
+python tools/clip_write.py addlayer  in.clip out.clip --copy-from 3 --name new --png patch.png
+
+# referential-integrity check — ALWAYS run this before opening a written file in CSP
+python tools/clip_validate.py out.clip
+
+# CLIP <-> PSD (needs the psdparse Python bindings)
+python tools/clip_to_psd.py input.clip output.psd  --verify
+python tools/psd_to_clip.py input.psd  output.clip --verify
+```
+
+`clip_probe.py` needs nothing but the standard library; `clip_lazy_demo.py` needs
+numpy, plus Pillow when comparing.
+
+## Build (C++ library / CLI)
 
 ```powershell
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 
-build\clipparse\Release\clip_cli.exe samples\test000.clip
-build\clipparse\Release\clip_cli.exe samples\test000.clip --check
+build\clipparse\Release\clip_cli.exe file.clip --check
+build\clipparse\Release\clip_cli.exe file.clip --validate
+build\clipparse\Release\clip_cli.exe in.clip --set 5 --opacity 64 --out out.clip
+build\clipparse\Release\clip_cli.exe in.clip --set-pixels 3 rgba.raw out.clip
+build\clipparse\Release\clip_cli.exe in.clip --add-layer  3 rgba.raw out.clip --name new
 ```
 
-依存は **zlib と sqlite3 のみ**。どちらも CMake の `FetchContent` がソースから
-取ってくるので、vcpkg 等のパッケージマネージャは不要 (psdparse と同じ方針)。
-SQLite は `sqlite3_deserialize(..., SQLITE_DESERIALIZE_READONLY)` で
-mmap 上をゼロコピー参照する — 一時ファイルを作らない。
-
-読み出しも合成も、Python の参照実装と**画素バイト単位で一致**することを
-回帰で確認している (表現色 4 種 / 合成モード 27 種 / 調整レイヤ / フォルダ)。
-**60 MB のファイルの合成で純 Python 版の約 20 倍速** (5.8 秒 vs 119 秒)。
-
-C++ 側にしかない口:
-
-- `layer_region(i, x, y, w, h)` — **重なる 256x256 タイルだけを展開する**部分読み。
-  PSD は行 RLE なので同じことができない
-- `preview_png()` — ファイルに埋まっている完成画 (`CanvasPreview`)
-
-### 書く側 (C++)
-
-`clip::ClipWriter` が `tools/clip_write.py` と同じことをする。
+The only dependencies are **zlib and sqlite3**, both fetched from source by CMake
+(`FetchContent`), so vcpkg and friends are unnecessary. SQLite is attached with
+`sqlite3_deserialize(..., SQLITE_DESERIALIZE_READONLY)` directly on the mmapped
+bytes — no temporary file is ever created.
 
 ```cpp
+clip::ClipFile f;
+f.load("artwork.clip");
+clip::Image img;
+f.mergedImage(img);                       // RGBA8, straight alpha
+
 clip::ClipWriter w;
-w.load("in.clip");
-w.addLayer(3, "追加", rgba, 300, 400);   // 既存レイヤを雛形に複製する
+w.load("artwork.clip");
+w.addLayer(3, "new layer", rgba, 300, 400);
 w.save("out.clip");
 ```
 
-```powershell
-build\clipparse\Release\clip_cli.exe in.clip --validate
-build\clipparse\Release\clip_cli.exe in.clip --roundtrip out.clip
-build\clipparse\Release\clip_cli.exe in.clip --set 5 --opacity 64 --out out.clip
-build\clipparse\Release\clip_cli.exe in.clip --set-pixels 3 rgba.raw out.clip
-build\clipparse\Release\clip_cli.exe in.clip --add-layer  3 rgba.raw out.clip --name 追加
-```
+C++ and Python produce **byte-identical chunk payloads** when writing, down to the
+zlib output; that equivalence is what the test suite checks.
 
-SQLite は `sqlite3_deserialize(RESIZEABLE)` で**書けるメモリ DB** にして、
-`sqlite3_serialize` で取り出す。一時ファイルを作らない。無変更往復は
-60 MB のファイルでも **sha256 一致** (0.14 秒)。
+## CLIP to PSD conversion
 
-**C++ と Python が書いたファイルは `CHNKExta` のペイロードがバイト一致する**
-(zlib の出力まで同じ)。これが書く側の正しさの担保で、
-`tests/test_write.py` が自動で確かめている。
-
-`clip::validate` / `clip_cli --validate` が参照整合性を検査する。
-**CSP で開く前に必ず通すこと** — ここに引っかかる種類の間違いは、
-寛容なリーダでは読めてしまうのに CSP では落ちたり全面透明になったりする。
-
-## CLIP ⇄ PSD 変換コマンド (C++)
-
-`examples/clipconv/` に**両方のライブラリを参照する側**のサンプルがある。
-どちらのライブラリもこのコマンドのために特別な口を持っていない
-— 公開 API だけで書いてある。
+`examples/clipconv/` is a standalone command that links both clipparse and
+psdparse, using nothing but their public APIs.
 
 ```powershell
 cmake -S examples/clipconv -B build-conv -DCMAKE_BUILD_TYPE=Release
@@ -122,117 +162,65 @@ build-conv\Release\clipconv.exe in.clip out.psd  --verify
 build-conv\Release\clipconv.exe in.psd  out.clip --verify
 ```
 
-CLIP → PSD → CLIP の往復で **13 サンプルすべて合成結果がバイト一致**。
-`tama.clip` (60MB / 72 層) で CLIP → PSD が **13.9 秒** (Python 版は 2 分 11 秒)、
-PSD → CLIP が **45.6 秒** (同 1 分 22 秒)。
-詳細と制限は [examples/clipconv/README.md](examples/clipconv/README.md)。
+Layer pixels, the folder tree and blend modes survive the round-trip; masks and
+clipping are baked into alpha, and adjustment/vector layers are not exported.
+Details in [examples/clipconv/README.md](examples/clipconv/README.md).
 
-## Python から使う
+## What works, and what does not
 
-```powershell
-pip install clipparse
-```
+| | |
+|---|---|
+| Reading | RGBA / gray / monochrome / mask planes, folders, masks, clipping, text and rasterized vector layers |
+| Compositing | 27 blend modes, pass-through folders, 5 adjustment-layer kinds. Of 28 samples, 13 are pixel-exact against CSP's own preview and 22 are within rounding error |
+| Writing | attributes, pixel replacement, add/delete layer, canvas rebuild — all confirmed in CSP 5.0.4 |
+| Not supported | vector layers (a brush engine would be needed), some adjustment kinds (levels, colour balance, posterize, gradient map) |
 
-Python 3.9〜3.14 (free-threaded 含む) の Linux / Windows / macOS 向けホイールを
-[PyPI](https://pypi.org/project/clipparse/) に置いてある。ソースから入れる場合は
-リポジトリのルートで `pip install .`。
+Writing has traps a tolerant reader cannot see — per-table storage types, a
+checksum CSP actually verifies, a mipmap count that crashes it when wrong. They
+were flushed out over five rounds of testing on real CLIP STUDIO and are checked
+mechanically by `clipparse.validate()` / `clip_cli --validate`.
+**Run the validator before opening anything you wrote.**
 
-```python
-import clipparse
-
-f = clipparse.ClipFile()
-f.load("file.clip")
-print(f.width, f.height, [l.name for l in f.layers])
-f.merged_image()                      # 全レイヤを合成した BGRA バイト列
-f.layer_region(1, 100, 120, 64, 48)   # 重なるタイルだけ展開する部分読み
-
-w = clipparse.ClipWriter()            # 書く側
-w.load("file.clip")
-w.add_layer(3, "追加", bgra, 300, 400)
-w.save("out.clip")
-clipparse.validate("out.clip")        # 問題のリスト (空なら OK)
-```
-
-**依存パッケージは無い。** ホイールに入るのは C++ 拡張だけで、zlib と sqlite3 は
-ビルド時にソースから取り込まれる (実行時の共有ライブラリを要求しない)。
-
-> `tools/imgdoc.py` (psdparse 互換面) は**パッケージに同梱していない**。
-> あれは psdparse を必要とするので、同梱すると依存ゼロでなくなるため。
-> 使うときはリポジトリから持ってきて `psdparse` を入れること。
-
-ビルドだけしたい場合は CMake から直接叩ける:
+## Tests
 
 ```powershell
-cmake -S . -B build-py -DCLIPPARSE_BUILD_PYTHON=ON `
-      -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-cmake --build build-py --config Release
-$env:PYTHONPATH="$PWD\build-py\python\Release"
+python -m pytest tests -q
 ```
 
-## psdparse 互換で読む
+The tests cross-check the C++ extension against the pure-Python reference
+implementation (pixels must match byte for byte) and the write path against
+CLIP STUDIO's own rules. Real `.clip` samples are not committed — see
+[docs/STATUS.md](docs/STATUS.md) for what goes into `samples/`.
 
-`tools/imgdoc.py` が psdparse 互換の読み取り面を `.clip` に被せる。
-**psdparse の `examples/` や `tools/` を 1 行も直さずに `.clip` へ向けられる。**
-
-```powershell
-# psdparse 向けのスクリプトを、そのまま .clip に対して走らせる
-python tools/run_on_clip.py D:\test\psdparse\tools\psd_export.py samples\blend2.clip --out-dir out
-python tools/run_on_clip.py D:\test\psdparse\examples\composite.py samples\text.clip out.png
-```
-
-```python
-import imgdoc
-doc = imgdoc.open("file.clip")     # .psd なら psdparse.PSDFile をそのまま返す
-doc.header.width, doc.header.height
-for i in doc.roots:                 # ツリービュー
-    print(doc.layers[i].name_unicode, doc.layers[i].children)
-doc.layer_image(0)                  # BGRA bytes
-```
-
-`layer_type` / `blend_mode` は **psdparse の enum をそのまま返す**ので、
-`psdparse.LayerType.NORMAL` との比較がそのまま通る。
-設計判断の根拠は [docs/DESIGN.md](docs/DESIGN.md) §5。
-
-バックエンドは C++ 拡張があればそちら、無ければ純 Python の参照実装。
-どちらでも結果は同じ (`imgdoc.BACKEND` で分かる)。
-
-## 検証ツール
+## How the format works, in five lines
 
 ```
-# 構造ダンプ (チャンク配置 / テーブル / Layer ツリー / Offscreen / ブロック列)
-python tools/clip_probe.py path/to/file.clip [--blocks]
-
-# 遅延参照プロトタイプ: SQLite から計算したオフセットだけで画素を取り出し、
-# 下から順に合成して参照 PNG と比較する
-python tools/clip_lazy_demo.py file.clip -o out.png --compare reference.png
+[CSFCHUNK header][CHNKHead][CHNKExta ...][CHNKSQLi][CHNKFoot]
+                            ^ pixel data  ^ all metadata (a SQLite3 database)
 ```
 
-```
-# CLIP <-> PSD 変換 (psdparse の Python バインディングが要る)
-python tools/clip_to_psd.py input.clip output.psd --verify
-python tools/psd_to_clip.py input.psd  output.clip --verify
+`CHNKHead.binary_section_size` points straight at the SQLite chunk, so the first
+64 bytes are enough to reach the metadata. From there, `ExternalChunk.Offset` plus
+the prefix sum of `Offscreen.Attribute.BlockSize[]` gives the absolute position of
+any pixel block — the binary area is never scanned.
 
-# 書き出し (無変更往復はバイト一致するのが正)
-python tools/clip_write.py roundtrip in.clip out.clip
-python tools/clip_write.py set       in.clip out.clip --layer 5 --opacity 64 --composite 2
-python tools/clip_write.py setpixels in.clip out.clip --layer 3 --png patch.png
-python tools/clip_write.py addlayer  in.clip out.clip --copy-from 3 --name 追加 --png patch.png
+## Documentation
 
-# 参照整合性の検査。**CSP で開く前に必ず通す**
-python tools/clip_validate.py out.clip
-```
+| | |
+|---|---|
+| [docs/PYTHON_API.md](docs/PYTHON_API.md) ([ja](docs/PYTHON_API.ja.md)) | Python API reference |
+| [docs/CLIP_FORMAT.md](docs/CLIP_FORMAT.md) | `.clip` format specification, measured facts kept apart from inferred ones |
+| [docs/DESIGN.md](docs/DESIGN.md) | Design of the lazy-reference scheme, the API shared with psdparse, roadmap |
+| [docs/STATUS.md](docs/STATUS.md) | Development status, how to resume, what is next |
+| [docs/CLIP_TOOLS_REPORT.md](docs/CLIP_TOOLS_REPORT.md) | Feedback for clip-tools: three reproducible bugs and two spec corrections |
 
-> 書く側には「こちらのリーダでは読めるのに CSP が受け付けない」落とし穴が
-> いくつもある (格納型・`MipmapCount`・チェックサム・サムネイルの世代番号・
-> `CanvasPreview`)。CSP 実機で 5 巡かけて洗い出し、
-> `clip_validate.py` で機械的に検査できるようにしてある。
+## Credits
 
-`clip_probe.py` は標準ライブラリのみ。`clip_lazy_demo.py` は numpy (比較時のみ Pillow)。
+- [animeops/clip-tools](https://github.com/animeops/clip-tools) — the Python
+  implementation this analysis started from.
+- [psdparse](https://github.com/wamsoft/psdparse) — the library whose design
+  clipparse follows.
 
-`samples/` の実ファイルはリポジトリ管理外 (`.gitignore`)。
+## License
 
-## 一次資料
-
-- [animeops/clip-tools](https://github.com/animeops/clip-tools) — Python 実装。
-  形式解析の出発点。特に `clip_tools/clip.md` と `clip_tools/structs/`。
-- [psdparse](https://github.com/wamsoft/psdparse) — 本ライブラリが倣う設計。`docs/ARCHITECTURE.md` を参照。
+MIT — see [LICENSE](LICENSE).

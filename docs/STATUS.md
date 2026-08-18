@@ -514,7 +514,10 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 
 ```
 CLAUDE.md                    リポジトリ運用の指針
-README.md                    概要
+README.md                    概要 (英語・利用者向けの入口)
+README.ja.md                 同 日本語版
+docs/PYTHON_API.md           Python API リファレンス (英語)
+docs/PYTHON_API.ja.md        同 日本語版
 .gitignore                   samples/ と *.clip を除外
 docs/CLIP_FORMAT.md          形式仕様 ([実測]/[推定] を区別)
 docs/DESIGN.md               設計検討・ロードマップ・テンプレート方式(§6.1)
