@@ -12,12 +12,19 @@ build-conv\Release\clipconv.exe in.clip out.psd  --verify
 build-conv\Release\clipconv.exe in.psd  out.clip --verify
 ```
 
-リポジトリを別の場所に置いている場合は 2 つのパスを渡す:
+依存リポジトリ (clipparse / psdparse) はローカルにあればそれを使い、
+無ければ GitHub (`wamsoft/clipparse` / `wamsoft/psdparse`) から `FetchContent`
+で取得する。別の場所に置いている場合は 2 つのパスを渡す:
 
 ```powershell
 cmake -S examples/clipconv -B build-conv `
       -DCLIPPARSE_DIR=D:/path/to/clipparse -DPSDPARSE_DIR=D:/path/to/psdparse
 ```
+
+| | |
+|---|---|
+| `-DCLIPCONV_FETCH_MISSING=OFF` | 取得せず、ローカルに無ければエラーで止める |
+| `-DCLIPPARSE_GIT_TAG=` / `-DPSDPARSE_GIT_TAG=` | 取得する branch / tag (既定 `master`) |
 
 外部パッケージマネージャは要らない。zlib と sqlite3 は両ライブラリの
 `FetchContent` がソースから取ってくる (zlib は両方が宣言するが、
