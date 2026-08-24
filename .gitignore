@@ -10,6 +10,7 @@ samples/*
 
 # 検証時の出力
 *.png
+*.psd
 temp/
 __pycache__/
 *.pyc
