@@ -23,7 +23,10 @@
 
 import sys
 
-from clip_write import ClipFile, as_str
+try:                                        # pip 版 (clipparse_tools パッケージ内)
+    from .clip_write import ClipFile, as_str
+except ImportError:                         # リポジトリの tools/ から直接実行
+    from clip_write import ClipFile, as_str
 
 
 def _ids(cur, table, col="MainId"):

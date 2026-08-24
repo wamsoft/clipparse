@@ -86,8 +86,18 @@ API の詳細は **[docs/PYTHON_API.ja.md](docs/PYTHON_API.ja.md)**
 
 ## コマンドラインツール
 
-ライブラリの機能は Python バインディングで足りる。`tools/` にあるスクリプトは
-仕様の参照実装と日常の道具で、**リポジトリにのみ存在する** (ホイールには入らない)。
+標準ライブラリだけで動くツールはホイールに同梱してあるので、
+`pip install clipparse` だけで次のコマンドが使える (追加の依存なし):
+
+```
+clip-probe    file.clip [--blocks]        # 構造ダンプ (チャンク / テーブル / ツリー / ブロック)
+clip-validate file.clip                   # 参照整合性の検査。CSP で開く前に通す
+clip-doctor   file.clip [--deep]          # レイヤ単位の診断。--fix/--remove で不正部分を除去
+clip-write    roundtrip in.clip out.clip  # 書き出し (setpixels/addlayer は numpy + Pillow が要る)
+```
+
+`tools/` のスクリプトは同じコード + 追加依存が要る部分で、
+仕様の参照実装としてリポジトリに置いてある。
 
 ```
 # 構造ダンプ (チャンク配置 / テーブル / Layer ツリー / ブロック列。標準ライブラリのみ)
@@ -104,6 +114,10 @@ python tools/clip_write.py addlayer  in.clip out.clip --copy-from 3 --name 追�
 
 # 参照整合性の検査。**CSP で開く前に必ず通す**
 python tools/clip_validate.py out.clip
+
+# レイヤ単位の診断と、壊れたレイヤ / マスク / サムネイルの除去
+python tools/clip_doctor.py file.clip --deep
+python tools/clip_doctor.py file.clip --fix --out fixed.clip
 
 # CLIP <-> PSD 変換 (psdparse の Python バインディングが要る)
 python tools/clip_to_psd.py input.clip output.psd  --verify

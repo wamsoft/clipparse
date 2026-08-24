@@ -36,3 +36,17 @@ target_link_libraries(clipparse_py PRIVATE clipparse)
 install(TARGETS clipparse_py
         LIBRARY DESTINATION "."
         RUNTIME DESTINATION ".")
+
+# 標準ライブラリだけで動く検証・修復ツールを `clipparse_tools` パッケージとして
+# 同梱する。**ソースの正本は tools/** (仕様検証の参照実装) で、ここでは取り込むだけ。
+# clip_encode / clip_build は numpy / Pillow がある環境でだけ使われる補助
+# (clip_write が遅延 import する)。imgdoc は psdparse を要求するので入れない。
+install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/clipparse_tools/__init__.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_probe.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_write.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_validate.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_doctor.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_encode.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_build.py"
+        DESTINATION clipparse_tools)

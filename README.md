@@ -88,9 +88,19 @@ Full reference: **[docs/PYTHON_API.md](docs/PYTHON_API.md)**
 
 ## Command-line tools
 
-The Python bindings cover the library; the scripts under `tools/` are the
-reference implementation and the day-to-day utilities. They live in the
-repository — they are not part of the wheel.
+The stdlib-only utilities ship with the wheel, so `pip install clipparse` also
+gives you these commands (no extra dependencies):
+
+```
+clip-probe    file.clip [--blocks]        # structure dump: chunks, tables, layer tree, blocks
+clip-validate file.clip                   # referential-integrity check — run before opening in CSP
+clip-doctor   file.clip [--deep]          # per-layer diagnosis; --fix/--remove excises broken layers
+clip-write    roundtrip in.clip out.clip  # writing (setpixels/addlayer need numpy + Pillow)
+```
+
+The scripts under `tools/` are the same code plus the parts that need extra
+dependencies; `tools/` is the reference implementation and stays in the
+repository.
 
 ```
 # structure dump — chunk layout, tables, layer tree, block list (stdlib only)
@@ -107,6 +117,10 @@ python tools/clip_write.py addlayer  in.clip out.clip --copy-from 3 --name new -
 
 # referential-integrity check — ALWAYS run this before opening a written file in CSP
 python tools/clip_validate.py out.clip
+
+# per-layer diagnosis and excision of broken layers / masks / thumbnails
+python tools/clip_doctor.py file.clip --deep
+python tools/clip_doctor.py file.clip --fix --out fixed.clip
 
 # CLIP <-> PSD (needs the psdparse Python bindings)
 python tools/clip_to_psd.py input.clip output.psd  --verify

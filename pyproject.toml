@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "clipparse"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fast CLIP STUDIO PAINT (.clip) reader/writer — C++17 core with pybind11 bindings"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -21,10 +21,19 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: Graphics Conversion",
 ]
 
-# 依存は無い。ホイールに入るのは **C++ 拡張モジュールだけ**で、
+# 依存は無い。ホイールは C++ 拡張 + 標準ライブラリだけで動くツール群
+# (`clipparse_tools` パッケージ。正本は tools/、取り込みは python/CMakeLists.txt)。
 # psdparse 互換面 (`tools/imgdoc.py`) は同梱しない — あれは psdparse を
 # 必要とするので、同梱すると依存ゼロでなくなる。リポジトリ側のツールのまま。
 dependencies = []
+
+# 検証・修復ツールのコンソールコマンド。すべて標準ライブラリのみで動く
+# (clip-write の setpixels / addlayer だけ numpy + Pillow があれば有効)。
+[project.scripts]
+clip-probe = "clipparse_tools.clip_probe:main"
+clip-validate = "clipparse_tools.clip_validate:main"
+clip-doctor = "clipparse_tools.clip_doctor:main"
+clip-write = "clipparse_tools.clip_write:main"
 
 [project.urls]
 Homepage = "https://github.com/wamsoft/clipparse"

@@ -332,7 +332,12 @@ def cmd_setpixels(args):
     n = c.save(args.dst)
     c.close()
     if not args.no_preview:
-        n = refresh_preview(args.dst)
+        # pip 版には imgdoc が入らないので合成できない。ファイル自体は書けている
+        try:
+            n = refresh_preview(args.dst)
+        except ImportError as e:
+            print(f"  警告: CanvasPreview を再合成できなかった ({e})。"
+                  f"開いた直後だけ古い絵が出る (--no-preview で黙らせられる)")
     nonempty = sum(1 for s in sizes if s != enc.EMPTY_RECORD_SIZE)
     if dropped:
         print("    サムネイルの実体を落とした (CSP が開いた時に作り直す)")
@@ -622,7 +627,11 @@ def cmd_addlayer(args):
     n = c.save(args.dst)
     c.close()
     if not args.no_preview:
-        n = refresh_preview(args.dst)
+        try:
+            n = refresh_preview(args.dst)
+        except ImportError as e:
+            print(f"  警告: CanvasPreview を再合成できなかった ({e})。"
+                  f"開いた直後だけ古い絵が出る (--no-preview で黙らせられる)")
     print(f"  雛形 #{args.copy_from} {src_name[0]!r} -> 新レイヤ #{new_layer} {args.name!r}")
     print(f"  {args.dst}  {n:,} B")
     return 0
