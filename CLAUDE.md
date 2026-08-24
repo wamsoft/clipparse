@@ -34,6 +34,11 @@ build\clipparse\Release\clip_cli.exe samples\opacity.clip --roundtrip out.clip
 python tools/clip_validate.py out.clip
 build\clipparse\Release\clip_cli.exe out.clip --validate
 
+# レイヤ単位の診断と不正部分の除去 (validate が NG のときの切り分けに)
+python tools/clip_doctor.py file.clip                       # どのレイヤが悪いか表示
+python tools/clip_doctor.py file.clip --deep                # 全ブロック zlib 展開まで照合
+python tools/clip_doctor.py file.clip --fix --out out.clip  # 修復 + 壊れたレイヤ除去
+
 # 回帰テスト
 python tools/clip_lazy_demo.py samples/test000.clip --compare samples/test000.png
 python -m pytest tests -q

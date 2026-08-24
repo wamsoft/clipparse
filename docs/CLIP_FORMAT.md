@@ -311,6 +311,20 @@ MipmapInfo 69 ThisScale=100.0 Offscreen=132 Next=382   ← マスク用 (同じ 
   足したレイヤでは **50**、既存レイヤでは 5 だった
   [実測: `samples/addlayer_csp.clip`]。書く側は 50 を入れている
 
+**レイヤ手術 (行の削除) を CSP は受け付ける** [実測: CSP 5.0.4 / DOCTOR_TEST 2026-08-24]。
+実装は `tools/clip_doctor.py`。5 変種すべて開けて、上書き保存 → 開き直しまで問題なし:
+
+- **レイヤ除去**: `Layer` 行 + `LayerId` を持つ全テーブルの行 + 実体チャンクを消し、
+  兄弟リンクを繋ぎ直す。フォルダは子孫ごと。テキストレイヤの第 3 カテゴリ
+  Offscreen (FK 無し) も `LayerId` で消して問題ない
+- **マスク外し**: マスク連鎖 (`Mipmap`/`MipmapInfo`/`Offscreen`) とマスクサムネイルを
+  行ごと消して `LayerLayerMaskMipmap` / `LayerLayerMaskThumbnail` を **0** にすると、
+  **マスク無しの普通のレイヤ**として扱われる (絵は全部見え、マスクを作り直せる)
+- **サムネイル削除**: `LayerThumbnail` を**行ごと**消して `LayerRenderThumbnail=0`
+  でも CSP はサムネイルを作り直す (上記の「実体だけ消す」方式と両方通る)
+- レイヤを消したら `Canvas.CanvasCurrentLayer` の付け替えと `CanvasPreview` の
+  再合成を忘れないこと (それぞれ WRITE_TEST_4 で確定した既知の作法)
+
 Offscreen の役割は 3 種類ある [実測]。サムネイルは「`MipmapInfo` に載っていないもの」
 ではなく `LayerThumbnail` 経由で引くこと。
 
