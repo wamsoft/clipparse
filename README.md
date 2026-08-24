@@ -110,8 +110,24 @@ pip install clipparse[all]    # both — also enables CanvasPreview recompositio
 ```
 
 Without the extra installed, the command explains what to install and exits.
-`psd-to-clip` rebuilds on a bundled blank template (a fresh CSP document);
-pass `--template` to use your own.
+
+```
+clip-to-psd in.clip out.psd  [--verify] [--flat]
+psd-to-clip in.psd  out.clip [--verify] [--paper] [--template empty.clip]
+```
+
+- `--verify` reads the output back and checks the pixels against the input
+  (layer-exact for CLIP→PSD; merged-composite match for PSD→CLIP).
+- CLIP→PSD keeps the folder tree (pass-through maps to PSD `pass`) and maps
+  all 27 blend modes; `--flat` skips folders. **Masks and clipping are baked
+  into the alpha** (they look right but are no longer editable), and
+  **adjustment / vector layers are not exported**. Translucent parts of
+  glow-dodge layers differ because PSD has no equivalent alpha behaviour.
+- PSD→CLIP rebuilds the canvas from a bundled blank template (a fresh CSP
+  document; pass `--template` to use your own — its size does not matter).
+  `--paper` keeps the template's white paper layer. The result opens in
+  CLIP STUDIO PAINT — verified on a real installation (PRO 5.0.4).
+
 The scripts under `tools/` are the same code; `tools/` is the reference
 implementation and stays in the repository.
 

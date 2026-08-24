@@ -107,8 +107,24 @@ pip install clipparse[all]    # 両方 — 編集時の CanvasPreview 再合成�
 ```
 
 extras が無い環境でコマンドを叩くと、何を入れればよいか案内して終了する。
-`psd-to-clip` は同梱の雛形 (CSP で新規作成した空ファイル) を種に組み立てる。
-自前の雛形を使うときは `--template` で渡す。
+
+```
+clip-to-psd in.clip out.psd  [--verify] [--flat]
+psd-to-clip in.psd  out.clip [--verify] [--paper] [--template empty.clip]
+```
+
+- `--verify` は出力を読み直して入力と突き合わせる (CLIP→PSD はレイヤ画素の
+  完全一致、PSD→CLIP は合成結果の一致)。
+- CLIP→PSD はフォルダ構造 (通過は PSD の `pass` へ) と合成モード 27 種を
+  写像する。`--flat` でフォルダなしの平坦化。**マスク・クリッピングは
+  アルファに焼き込む** (見た目は合うが編集不可)。**調整レイヤ・ベクタレイヤは
+  出力しない**。覆い焼き (発光) の半透明部は PSD に相当する α の扱いが無く
+  非可逆。
+- PSD→CLIP は同梱の雛形 (CSP で新規作成した空ファイル) からキャンバスごと
+  組み立て直す。自前の雛形は `--template` で (寸法は作り替えるので任意)。
+  `--paper` で雛形の白い用紙レイヤを残す。出力は CLIP STUDIO PAINT で
+  開けることを実機 (PRO 5.0.4) で確認済み。
+
 `tools/` のスクリプトは同じコードで、仕様の参照実装としてリポジトリに置いてある。
 
 ```
