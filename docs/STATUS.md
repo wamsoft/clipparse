@@ -469,8 +469,10 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 **`tools/imgdoc.py` は同梱しない**方針にした。あれは psdparse を要求するので、
 入れると依存ゼロでなくなる。psdparse 互換面が要る人はリポジトリから取る。
 
-**0.2.0 (準備済み・未公開)**: ツール群を `clipparse_tools` パッケージとして
-ホイールに同梱した。依存ゼロは維持 (追加機能は extras で opt-in):
+**0.2.0 (公開済み 2026-08-24)**: ツール群を `clipparse_tools` パッケージとして
+ホイールに同梱した。依存ゼロは維持 (追加機能は extras で opt-in)。
+v0.2.0 タグ → CI 全ジョブ成功 → PyPI 反映まで確認済み
+(PyPI から pip install してコマンド動作・extras 案内とも実機確認):
 
 - **標準装備** (依存なし): `clip-probe` / `clip-validate` / `clip-doctor` /
   `clip-export` / `clip-write`。clip-export は新設 — 合成 PNG とレイヤ別 PNG
