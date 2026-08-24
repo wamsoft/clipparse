@@ -97,6 +97,30 @@ clip-export   file.clip [-o out.png]      # 合成 PNG。--layers DIR で全レ�
 clip-write    roundtrip in.clip out.clip  # 書き出し (往復 / 属性 / 画素 / レイヤ追加)
 ```
 
+`clip-validate` がファイル全体の合否だけを出すのに対し、`clip-doctor` は
+**どのレイヤが悪いか**まで切り分ける:
+
+```
+clip-doctor file.clip [--deep]                   # 診断: レイヤツリー + 問題一覧
+clip-doctor file.clip --fix --out fixed.clip     # 修復 + 壊れたレイヤの除去
+clip-doctor file.clip --remove 7 --out out.clip  # 指定レイヤの除去 (フォルダは子孫ごと)
+```
+
+- 全レイヤのミップ連鎖 (描画・マスク両方)、Attribute とブロック列の構造、
+  参照している実体チャンクがファイル内に実在するかを検査する。
+  `--deep` を付けると全ブロックを zlib 展開して照合する。
+- 判定は 3 段階。**除去候補** = レイヤの画素データ自体が壊れている
+  (連鎖の断線・ブロック破損・実体の欠落)。直しようがないので `--fix` は
+  レイヤごと取り除く。**修復可能** = 参照や数値の食い違いでデータ本体は無事
+  (`MipmapCount` 不一致・死んだリンク・格納型・マスクやサムネイルだけの破損)。
+  `--fix` がその場で直し、マスク・サムネイルは壊れた部分だけ切除する。
+  **情報** = CSP 自身のファイルにもある無害な状態。
+- レイヤ番号は `MainId` (ツリー表示と `clip-probe` に出るもの)。
+  `clip-export` の index とは別物。
+- 書き出し後は内蔵プレビューを合成し直し、`clip-validate` と同じ検査を
+  自動で通す。行う手術はすべて CLIP STUDIO PAINT 実機 (PRO 5.0.4) で
+  開けることを確認済み。
+
 一部の機能は、対応するライブラリがある環境でだけ有効になる
 (extras 方式。本体は依存ゼロのまま):
 

@@ -100,6 +100,31 @@ clip-export   file.clip [-o out.png]      # merged PNG; --layers DIR exports eve
 clip-write    roundtrip in.clip out.clip  # writing: round-trip, attributes, pixels, add layer
 ```
 
+`clip-doctor` tells you **which layer** is bad, where `clip-validate` only
+gives a pass/fail for the file:
+
+```
+clip-doctor file.clip [--deep]                   # diagnose: layer tree + findings
+clip-doctor file.clip --fix --out fixed.clip     # repair, and excise broken layers
+clip-doctor file.clip --remove 7 --out out.clip  # remove specific layers (folders take their subtree)
+```
+
+- Checks every layer's mipmap chains (render and mask), the attribute and
+  block-stream structure, and whether the referenced pixel chunks actually
+  exist in the file; `--deep` additionally inflates every zlib block.
+- Findings come in three grades. **Removal candidates**: the layer's pixel
+  data itself is broken (severed chain, corrupt blocks, missing chunks) —
+  nothing left to repair, so `--fix` removes the layer. **Repairable**:
+  references or counters are off but the data is intact (`MipmapCount`
+  mismatches, dead links, storage types, a broken mask or thumbnail only) —
+  `--fix` repairs these in place, cutting away just the broken mask or
+  thumbnail. **Info**: harmless states that CSP's own files also contain.
+- Layer numbers are `MainId` (shown in the tree and by `clip-probe`), not the
+  indices `clip-export` uses.
+- After writing it recomposes the embedded preview, re-runs the
+  `clip-validate` checks, and every kind of surgery it performs has been
+  verified to open in a real CLIP STUDIO PAINT installation (PRO 5.0.4).
+
 Some features activate when optional libraries are present ("extras" —
 the base install stays dependency-free):
 
