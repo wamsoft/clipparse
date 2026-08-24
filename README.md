@@ -88,19 +88,32 @@ Full reference: **[docs/PYTHON_API.md](docs/PYTHON_API.md)**
 
 ## Command-line tools
 
-The stdlib-only utilities ship with the wheel, so `pip install clipparse` also
-gives you these commands (no extra dependencies):
+The utilities ship with the wheel, so `pip install clipparse` also gives you
+these commands (no extra dependencies — compositing and pixel decoding run in
+the bundled C++ extension):
 
 ```
 clip-probe    file.clip [--blocks]        # structure dump: chunks, tables, layer tree, blocks
 clip-validate file.clip                   # referential-integrity check — run before opening in CSP
 clip-doctor   file.clip [--deep]          # per-layer diagnosis; --fix/--remove excises broken layers
-clip-write    roundtrip in.clip out.clip  # writing (setpixels/addlayer need numpy + Pillow)
+clip-export   file.clip [-o out.png]      # merged PNG; --layers DIR exports every layer + manifest
+clip-write    roundtrip in.clip out.clip  # writing: round-trip, attributes, pixels, add layer
 ```
 
-The scripts under `tools/` are the same code plus the parts that need extra
-dependencies; `tools/` is the reference implementation and stays in the
-repository.
+Some features activate when optional libraries are present ("extras" —
+the base install stays dependency-free):
+
+```
+pip install clipparse[psd]    # psdparse + numpy  → clip-to-psd / psd-to-clip converters
+pip install clipparse[image]  # numpy + Pillow    → clip-write setpixels / addlayer
+pip install clipparse[all]    # both — also enables CanvasPreview recomposition on edits
+```
+
+Without the extra installed, the command explains what to install and exits.
+`psd-to-clip` rebuilds on a bundled blank template (a fresh CSP document);
+pass `--template` to use your own.
+The scripts under `tools/` are the same code; `tools/` is the reference
+implementation and stays in the repository.
 
 ```
 # structure dump — chunk layout, tables, layer tree, block list (stdlib only)

@@ -37,9 +37,17 @@ from clip_build import resize_canvas                       # noqa: E402
 from clip_write import (ClipFile, add_layer, delete_layer,  # noqa: E402
                         refresh_preview)
 
-DEFAULT_TEMPLATE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "samples", "emptyimage.clip")
+def _find_template():
+    """雛形の空 .clip を探す。pip 版はパッケージ同梱の data/、リポジトリは samples/。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(here, "data", "emptyimage.clip"),
+              os.path.join(os.path.dirname(here), "samples", "emptyimage.clip")):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+DEFAULT_TEMPLATE = _find_template()
 
 # clip_to_psd.BLEND_TO_PSD の逆。1 対多だった 10/12 は情報を保つ側 (9/11) を選ぶ。
 #
@@ -254,6 +262,13 @@ def main(argv=None):
     ap.add_argument("--verify", action="store_true",
                     help="書いた後で読み直して PSD と突き合わせる")
     args = ap.parse_args(argv)
+
+    if not args.template or not os.path.exists(args.template):
+        # テンプレート方式 (docs/DESIGN.md §6.1): 空の .clip を雛形に作り替えるので
+        # 種が要る。同梱されていないビルドでは自前のものを渡してもらう。
+        print("雛形の空 .clip が見つからない。CSP で「新規作成」しただけの\n"
+              "ファイルを --template で渡すこと (キャンバス寸法は作り替えるので任意)")
+        return 2
 
     convert(args.src, args.dst, args.template, args.paper, args.checksum)
     if args.verify:

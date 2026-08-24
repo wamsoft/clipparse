@@ -37,16 +37,35 @@ install(TARGETS clipparse_py
         LIBRARY DESTINATION "."
         RUNTIME DESTINATION ".")
 
-# 標準ライブラリだけで動く検証・修復ツールを `clipparse_tools` パッケージとして
-# 同梱する。**ソースの正本は tools/** (仕様検証の参照実装) で、ここでは取り込むだけ。
-# clip_encode / clip_build は numpy / Pillow がある環境でだけ使われる補助
-# (clip_write が遅延 import する)。imgdoc は psdparse を要求するので入れない。
+# 検証・修復・変換ツールを `clipparse_tools` パッケージとして同梱する。
+# **ソースの正本は tools/** (仕様検証の参照実装) で、ここでは取り込むだけ。
+# 依存が要るものも入れておき、ライブラリが見つかったときだけ有効になる
+# (extras 方式。pyproject.toml の [project.optional-dependencies]):
+#   依存なし          : clip_probe / clip_validate / clip_doctor / clip_export
+#   [image] numpy+PIL : clip_write の setpixels / addlayer (clip_encode / clip_build)
+#   [psd]   psdparse  : clip_to_psd / psd_to_clip / imgdoc / clip_lazy_demo
 install(FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/clipparse_tools/__init__.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_probe.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_write.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_validate.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_doctor.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_export.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_encode.py"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_build.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_lazy_demo.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/imgdoc.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/clip_to_psd.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tools/psd_to_clip.py"
         DESTINATION clipparse_tools)
+
+# psd-to-clip の雛形 (テンプレート方式の種)。手元にあるときだけ同梱する
+# — samples/ は gitignore なので、CI ビルドには入らない。その場合
+# psd-to-clip は --template を要求する (案内を出して終了する)。
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../samples/emptyimage.clip")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../samples/emptyimage.clip"
+            DESTINATION clipparse_tools/data)
+else()
+    message(STATUS "clipparse_tools: samples/emptyimage.clip not found — "
+                   "psd-to-clip will require --template")
+endif()

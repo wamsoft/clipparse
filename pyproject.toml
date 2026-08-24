@@ -27,13 +27,24 @@ classifiers = [
 # 必要とするので、同梱すると依存ゼロでなくなる。リポジトリ側のツールのまま。
 dependencies = []
 
-# 検証・修復ツールのコンソールコマンド。すべて標準ライブラリのみで動く
-# (clip-write の setpixels / addlayer だけ numpy + Pillow があれば有効)。
+# 追加機能は extras で opt-in する。本体の依存ゼロは変わらない —
+# ツールのファイル自体は wheel に入っていて、これらのライブラリが
+# 見つかったときだけ有効になる (無ければ案内を出して終了する)。
+[project.optional-dependencies]
+image = ["numpy", "pillow"]              # clip-write setpixels / addlayer
+psd = ["psdparse>=0.10", "numpy"]        # clip-to-psd / psd-to-clip
+all = ["psdparse>=0.10", "numpy", "pillow"]  # 上記全部 + CanvasPreview 再合成
+
+# 検証・修復・変換ツールのコンソールコマンド。clip-to-psd / psd-to-clip 以外は
+# 標準ライブラリ + 同梱拡張だけで動く (clip-export は拡張が合成する)。
 [project.scripts]
 clip-probe = "clipparse_tools.clip_probe:main"
 clip-validate = "clipparse_tools.clip_validate:main"
 clip-doctor = "clipparse_tools.clip_doctor:main"
+clip-export = "clipparse_tools.clip_export:main"
 clip-write = "clipparse_tools.clip_write:main"
+clip-to-psd = "clipparse_tools:clip_to_psd_main"
+psd-to-clip = "clipparse_tools:psd_to_clip_main"
 
 [project.urls]
 Homepage = "https://github.com/wamsoft/clipparse"
@@ -53,6 +64,9 @@ wheel.packages = []
 build-dir = "build/skbuild/{wheel_tag}"
 
 [tool.scikit-build.sdist]
+# samples/ は除外だが、psd-to-clip の雛形 (テンプレート方式の種) だけは
+# sdist にも入れる — これが無いと sdist からのビルドで同梱されない
+include = ["samples/emptyimage.clip"]
 exclude = [
     "samples/",          # 再配布不可の実ファイル置き場
     "*.clip",

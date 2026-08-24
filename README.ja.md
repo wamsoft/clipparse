@@ -86,18 +86,30 @@ API の詳細は **[docs/PYTHON_API.ja.md](docs/PYTHON_API.ja.md)**
 
 ## コマンドラインツール
 
-標準ライブラリだけで動くツールはホイールに同梱してあるので、
-`pip install clipparse` だけで次のコマンドが使える (追加の依存なし):
+ツール群はホイールに同梱してあるので、`pip install clipparse` だけで
+次のコマンドが使える (追加の依存なし — 合成・画素展開は同梱の C++ 拡張が行う):
 
 ```
 clip-probe    file.clip [--blocks]        # 構造ダンプ (チャンク / テーブル / ツリー / ブロック)
 clip-validate file.clip                   # 参照整合性の検査。CSP で開く前に通す
 clip-doctor   file.clip [--deep]          # レイヤ単位の診断。--fix/--remove で不正部分を除去
-clip-write    roundtrip in.clip out.clip  # 書き出し (setpixels/addlayer は numpy + Pillow が要る)
+clip-export   file.clip [-o out.png]      # 合成 PNG。--layers DIR で全レイヤ + manifest
+clip-write    roundtrip in.clip out.clip  # 書き出し (往復 / 属性 / 画素 / レイヤ追加)
 ```
 
-`tools/` のスクリプトは同じコード + 追加依存が要る部分で、
-仕様の参照実装としてリポジトリに置いてある。
+一部の機能は、対応するライブラリがある環境でだけ有効になる
+(extras 方式。本体は依存ゼロのまま):
+
+```
+pip install clipparse[psd]    # psdparse + numpy  → clip-to-psd / psd-to-clip 変換
+pip install clipparse[image]  # numpy + Pillow    → clip-write setpixels / addlayer
+pip install clipparse[all]    # 両方 — 編集時の CanvasPreview 再合成も有効になる
+```
+
+extras が無い環境でコマンドを叩くと、何を入れればよいか案内して終了する。
+`psd-to-clip` は同梱の雛形 (CSP で新規作成した空ファイル) を種に組み立てる。
+自前の雛形を使うときは `--template` で渡す。
+`tools/` のスクリプトは同じコードで、仕様の参照実装としてリポジトリに置いてある。
 
 ```
 # 構造ダンプ (チャンク配置 / テーブル / Layer ツリー / ブロック列。標準ライブラリのみ)

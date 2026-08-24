@@ -469,19 +469,26 @@ Python 版と 1 箇所だけ違う: **C++ 版はテキストレイヤを外接�
 **`tools/imgdoc.py` は同梱しない**方針にした。あれは psdparse を要求するので、
 入れると依存ゼロでなくなる。psdparse 互換面が要る人はリポジトリから取る。
 
-**0.2.0 (準備済み・未公開)**: 標準ライブラリだけで動くツールを
-`clipparse_tools` パッケージとしてホイールに同梱した。依存ゼロは維持:
+**0.2.0 (準備済み・未公開)**: ツール群を `clipparse_tools` パッケージとして
+ホイールに同梱した。依存ゼロは維持 (追加機能は extras で opt-in):
 
-- コマンド 4 つ: `clip-probe` / `clip-validate` / `clip-doctor` / `clip-write`
-  (`pyproject.toml` の `[project.scripts]`)
+- **標準装備** (依存なし): `clip-probe` / `clip-validate` / `clip-doctor` /
+  `clip-export` / `clip-write`。clip-export は新設 — 合成 PNG とレイヤ別 PNG
+  (+ manifest.json) を書き出す。**合成・画素展開は同梱の C++ 拡張が行い、
+  PNG は zlib だけの最小ライタ**なので numpy / Pillow 不要
+- **extras** (`[project.optional-dependencies]`):
+  `[image]` = numpy + Pillow → `clip-write setpixels` / `addlayer`。
+  `[psd]` = psdparse + numpy → `clip-to-psd` / `psd-to-clip`
+  (imgdoc / clip_lazy_demo / clip_to_psd / psd_to_clip も wheel に同梱)。
+  `[all]` = 両方 → 編集時の CanvasPreview 再合成も有効。
+  extras 無しでコマンドを叩くと `pip install clipparse[psd]` を案内して終了
+- **psd-to-clip の雛形** `samples/emptyimage.clip` (CSP 新規作成の空ファイル、
+  267KB) をコミットして wheel / sdist に同梱した (唯一の gitignore 例外)。
+  無いビルドでは `--template` を案内して終了する
 - **正本は `tools/` のまま**。`python/CMakeLists.txt` の `install(FILES)` が
   ビルド時に取り込む。tools 側は相対 import を try/except で両対応にした
-- `clip_encode` / `clip_build` も入れてある (numpy + Pillow がある環境でだけ
-  `clip-write setpixels` / `addlayer` が有効になる。import は遅延)
-- CanvasPreview の再合成だけは imgdoc (=psdparse) が要るので、
-  pip 版では**警告してスキップ**する (ファイル自体は正しく書ける)
-- クリーン venv で確認済み: 4 コマンド動作 / 往復 sha256 一致 /
-  拡張 `import clipparse` も従来どおり
+- クリーン venv で確認済み: 標準装備 5 コマンド動作 / 往復 sha256 一致 /
+  clip-export の画素が imgdoc と max=0 / extras 導入で変換 2 コマンド動作
 - 公開は従来どおり tag push (`git tag -a v0.2.0`) → cibuildwheel
 
 クリーンな venv にホイールを入れて、読み・合成・書き・検査まで動作確認済み。
@@ -564,12 +571,14 @@ tools/clip_build.py          キャンバスの寸法ごと作り替える (W4 �
 tools/psd_to_clip.py         PSD -> CLIP 変換
 tools/clip_validate.py       参照整合性の検査 (CSP で開く前に通す)
 tools/clip_doctor.py         レイヤ単位の診断と不正部分の除去 (validate の切り分け先)
+tools/clip_export.py         合成 / レイヤの PNG 書き出し (C++ 拡張 + 自前 PNG ライタ)
 tools/clip_to_psd.py         CLIP -> PSD 変換
 tools/imgdoc.py              psdparse 互換の読み取り面 (C++/Python 両バックエンド)
 tools/run_on_clip.py         psdparse 向けスクリプトを .clip に向ける実行器
 tests/test_imgdoc.py         共通面のテスト 16 件
 tests/test_write.py          書き込み経路のテスト 25 件 (C++ との突き合わせ込み)
 tests/test_doctor.py         clip_doctor のテスト 7 件 (壊す → 検出 → 修復/除去)
+tests/test_export.py         clip_export のテスト 5 件 (PNG ライタ往復 / imgdoc と画素一致)
 python/clipparse_module.cpp  pybind11 バインディング
 python/clipparse_tools/      同梱ツールパッケージの __init__ (実体は tools/ から取り込み)
 samples/                     gitignore 済み。実ファイル置き場
@@ -580,7 +589,7 @@ samples/                     gitignore 済み。実ファイル置き場
 | ファイル | 出所 | 扱い |
 |---|---|---|
 | `test000.clip` / `test000.png` | clip-tools (MIT) | **回帰フィクスチャ。消さない** |
-| `emptyimage.clip` / `emptyanime.clip` | ユーザーが CSP で新規作成 | テンプレート方式の種 |
+| `emptyimage.clip` / `emptyanime.clip` | ユーザーが CSP で新規作成 | テンプレート方式の種。**emptyimage はコミット済み・wheel 同梱** (唯一の gitignore 例外) |
 | `tama.clip` / `haruse-ja.clip` / `nazoani01_ja.clip` | CLIP STUDIO 公式サンプル | **再配布不可・コミット禁止** |
 | `gray_*` `mono_*` `text` `vector*` `mask` `clipping` `folder` `filter` `opacity` `blendmodes` `blend2` `passthrough` `adj_*` | ユーザーが CSP 5.0.4 で作成 | 合成の正解合わせ用 |
 

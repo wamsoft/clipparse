@@ -1,6 +1,12 @@
 # 実サンプル (数十 MB〜、検証用にローカルへ置くだけ)
-samples/
+# `samples/` でなく `samples/*` なのは下の例外を効かせるため
+# (ディレクトリごと ignore すると中の否定パターンが無効になる)
+samples/*
 *.clip
+
+# 例外: psd-to-clip のテンプレート方式の種 (CSP で新規作成した空ファイル)。
+# wheel にも同梱する (python/CMakeLists.txt)
+!samples/emptyimage.clip
 
 # 検証時の出力
 *.png

@@ -48,7 +48,8 @@ python tools/clip_probe.py path/to/file.clip
 python tools/clip_probe.py path/to/file.clip --blocks    # ブロックサブレコードまで展開
 ```
 
-サンプルは `samples/` (gitignore 済み)。**参照 PNG があるのは `test000` だけ**なので、
+サンプルは `samples/` (gitignore 済み。例外は `emptyimage.clip` のみ —
+psd-to-clip の雛形として wheel に同梱するのでコミットしてある)。**参照 PNG があるのは `test000` だけ**なので、
 ピクセル一致の回帰確認はこれで行う。公式サンプル 3 本 (tama / haruse / nazoani) は
 **再配布不可**。中身の一覧は `docs/STATUS.md`。
 
